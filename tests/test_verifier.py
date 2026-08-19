@@ -56,6 +56,7 @@ class StubFetcher:
 
 
 def build_verifier(fetcher, **kw) -> ObservationVerifier:
+    kw.setdefault("min_open_interest", 500)
     return ObservationVerifier(fetcher, today=lambda: TODAY, **kw)
 
 
@@ -285,3 +286,51 @@ def test_audit_payload_is_json_friendly():
 
     payload = result.as_audit_payload()
     assert json.loads(json.dumps(payload))[0]["claimed"] == "-0.10"
+
+
+# --------------------------------------------------------------------------
+# the liquidity floor is mandate policy, not a library constant
+# --------------------------------------------------------------------------
+
+
+def test_from_mandate_reads_the_floor():
+    import pathlib
+
+    import yaml
+
+    mandate = yaml.safe_load(
+        (pathlib.Path(__file__).resolve().parent.parent / "config" / "mandate.yaml").read_text()
+    )
+    verifier = ObservationVerifier.from_mandate(
+        mandate, StubFetcher(HONEST_CHAIN), today=lambda: TODAY
+    )
+    assert verifier._min_open_interest == mandate["universe"]["min_open_interest"]
+
+
+def test_from_mandate_refuses_to_invent_a_floor():
+    with pytest.raises(ValueError, match="min_open_interest"):
+        ObservationVerifier.from_mandate({"universe": {}}, StubFetcher(HONEST_CHAIN))
+
+
+def test_the_floor_has_no_default():
+    """Constructing without a floor is an error, not a silent 500."""
+    with pytest.raises(TypeError):
+        ObservationVerifier(StubFetcher(HONEST_CHAIN))
+
+
+def test_the_mandate_floor_is_what_gets_enforced():
+    import pathlib
+
+    import yaml
+
+    mandate = yaml.safe_load(
+        (pathlib.Path(__file__).resolve().parent.parent / "config" / "mandate.yaml").read_text()
+    )
+    mandate["universe"]["min_open_interest"] = 3000  # above the chain's 2804
+    result = ObservationVerifier.from_mandate(
+        mandate, StubFetcher(HONEST_CHAIN), today=lambda: TODAY
+    ).verify(proposal_with())
+
+    assert not result.verified
+    assert result.discrepancies[0].field == "open_interest"
+    assert "3000" in result.discrepancies[0].detail

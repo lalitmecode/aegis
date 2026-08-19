@@ -76,6 +76,10 @@ class TradeProposal:
     limit_price: Decimal
     max_loss_usd: Decimal
     time_in_force: TimeInForce = TimeInForce.DAY
+    #: The research agent's written rationale. Hashed with everything else: a
+    #: human approves a trade *and* the reasoning given for it, so rewriting
+    #: the thesis after approval voids the token.
+    thesis: str | None = None
 
     def canonical_payload(self) -> dict[str, Any]:
         """Deterministic dict of the proposal's executable content.
@@ -92,6 +96,7 @@ class TradeProposal:
             "limit_price": _number(self.limit_price),
             "max_loss_usd": _number(self.max_loss_usd),
             "time_in_force": _enum_value(self.time_in_force),
+            "thesis": self.thesis,
         }
 
     def content_hash(self) -> str:

@@ -17,10 +17,13 @@ objective: >
 universe:
   allowed_symbols: [AAPL, MSFT, NVDA, AMZN, GOOGL, META, SPY, QQQ]
   rationale: "High liquidity, tight option spreads, reliable Greeks."
+  # Minimum open interest at any strike we trade. Read by the research agent
+  # when selecting legs and by the observation verifier when checking them.
+  min_open_interest: 500
   prohibited:
     - "Any symbol not in allowed_symbols"
     - "Earnings within 7 calendar days"
-    - "Symbols with option open interest below 500 at the chosen strike"
+    - "Symbols with option open interest below universe.min_open_interest at the chosen strike"
 
 strategy:
   permitted_structures:

@@ -9,7 +9,7 @@ Neither endpoint is sufficient on its own:
 :func:`fetch_chain` issues one of each and joins them on the OCC symbol, so a
 caller sees delta and open interest side by side -- the two fields
 ``config/mandate.yaml`` screens on (``delta_limits.short_leg_abs_delta_max``
-and the 500-contract open interest floor under ``universe.prohibited``).
+and ``universe.min_open_interest``).
 """
 
 from __future__ import annotations
@@ -135,10 +135,12 @@ class Chain:
         candidates = [c for c in self.contracts if c.type == type and c.delta is not None]
         if not candidates:
             return None
-        return min(candidates, key=lambda c: abs(abs(c.delta) - abs(target)))
+        # Coerce: callers pass Decimal deltas, the chain stores floats.
+        wanted = abs(float(target))
+        return min(candidates, key=lambda c: abs(abs(float(c.delta)) - wanted))
 
-    def liquid(self, min_open_interest: int = 500) -> list[Contract]:
-        """Contracts clearing the mandate's open interest floor."""
+    def liquid(self, min_open_interest: int) -> list[Contract]:
+        """Contracts clearing a liquidity floor, e.g. ``universe.min_open_interest``."""
         return [
             c
             for c in self.contracts

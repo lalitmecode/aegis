@@ -18,17 +18,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from aegis.core.option_chain import fetch_chain
 from aegis.core.proposal import TradeProposal, parse_occ_symbol
 
 #: Absolute delta difference tolerated between claim and observation.
 DEFAULT_TOLERANCE = Decimal("0.02")
-
-#: Mirrors config/mandate.yaml universe.prohibited: "Symbols with option open
-#: interest below 500 at the chosen strike".
-DEFAULT_MIN_OPEN_INTEREST = 500
 
 #: Initial strike band. Widened once if the proposal's strikes fall outside it.
 _PROBE_MONEYNESS = 0.10
@@ -98,13 +94,43 @@ class ObservationVerifier:
         chain_fetcher: Callable[..., Any] = fetch_chain,
         tolerance: Decimal = DEFAULT_TOLERANCE,
         *,
-        min_open_interest: int = DEFAULT_MIN_OPEN_INTEREST,
+        min_open_interest: int,
         today: Callable[[], date] | None = None,
     ) -> None:
+        """``min_open_interest`` has no default on purpose.
+
+        The liquidity floor is a mandate decision, not a library constant --
+        see :meth:`from_mandate`.
+        """
         self._fetch = chain_fetcher
         self._tolerance = Decimal(str(tolerance))
         self._min_open_interest = int(min_open_interest)
         self._today = today or date.today
+
+    @classmethod
+    def from_mandate(
+        cls,
+        mandate: Mapping[str, Any],
+        chain_fetcher: Callable[..., Any] = fetch_chain,
+        tolerance: Decimal = DEFAULT_TOLERANCE,
+        *,
+        today: Callable[[], date] | None = None,
+    ) -> "ObservationVerifier":
+        """Build a verifier whose liquidity floor comes from the mandate.
+
+        Raises:
+            ValueError: the mandate does not define ``universe.min_open_interest``.
+                Guessing a floor here would be inventing policy.
+        """
+        floor = (mandate.get("universe") or {}).get("min_open_interest")
+        if floor is None:
+            raise ValueError("mandate does not define universe.min_open_interest")
+        return cls(
+            chain_fetcher,
+            tolerance,
+            min_open_interest=int(floor),
+            today=today,
+        )
 
     def verify(self, proposal: TradeProposal) -> VerificationResult:
         """Reconcile every leg. Any discrepancy is blocking."""

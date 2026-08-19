@@ -117,7 +117,9 @@ def run(label, proposal, *, chain=None, token_age=0):
         RiskGuard(MANDATE, session=Session(), clock=lambda: NOW),
         audit,
         broker,
-        verifier=ObservationVerifier(chain or stub_chain(), today=lambda: TODAY),
+        verifier=ObservationVerifier.from_mandate(
+            MANDATE, chain or stub_chain(), today=lambda: TODAY
+        ),
         clock=lambda: NOW,
     )
     token = ApprovalToken.issue(proposal, "demo-operator", now=NOW - timedelta(seconds=token_age))
