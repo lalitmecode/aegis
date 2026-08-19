@@ -37,6 +37,7 @@ from rich.table import Table
 from rich.text import Text
 
 from aegis.agents.critic import CriticAgent
+from aegis.agents.llm import build_llm_client
 from aegis.agents.research import ResearchAgent
 from aegis.core.approval import APPROVAL_TTL_SECONDS, ApprovalToken
 from aegis.core.audit import HashChainAudit
@@ -381,16 +382,18 @@ def render_result(result, audit: HashChainAudit) -> None:
 
 def build_llm(no_llm: bool) -> Any | None:
     if no_llm:
-        console.print("[yellow]--no-llm: running without Claude. The trade is unaffected; "
+        console.print("[yellow]--no-llm: running without a model. The trade is unaffected; "
                       "there will be no thesis and the critic will fail closed.[/yellow]")
         return None
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        console.print("[yellow]ANTHROPIC_API_KEY is not set. Proceeding without Claude: "
-                      "no thesis, and the critic fails closed.[/yellow]")
-        return None
-    import anthropic
 
-    return anthropic.Anthropic()
+    client = build_llm_client()
+    if client is None:
+        console.print("[yellow]No LLM provider configured (set ANTHROPIC_API_KEY or "
+                      "GEMINI_API_KEY). Proceeding without one: no thesis, and the critic "
+                      "fails closed.[/yellow]")
+        return None
+    console.print(f"[dim]LLM provider: {type(client).__name__} ({client.model})[/dim]")
+    return client
 
 
 def preflight(mandate) -> None:

@@ -139,6 +139,14 @@ Python 3.14, [alpaca-py](https://github.com/alpacahq/alpaca-py) 0.44 for market 
 submission, pytest for tests. No web framework, no database; the mandate is a YAML file and the
 audit chain is an injected interface.
 
+The language model is a configuration choice, not a dependency. `aegis/agents/llm.py` defines a
+one-method `LLMClient` protocol — `complete(system, user)` — with backends for Gemini
+(`gemini-2.5-flash`, the default when `GEMINI_API_KEY` is set) and Claude (`ANTHROPIC_API_KEY`,
+which takes precedence). Set neither and the agents run without a model: proposals carry no
+thesis, the critic fails closed, and the trade is byte-identical. Keeping the protocol to one
+method is what makes that swap cheap — and it also means nothing an agent cannot express through
+`complete()` can be delegated to a model.
+
 Market data is read through Alpaca's MCP server (`.mcp.json`), which is convenient for
 exploration and for the agent's own research. Order flow does not go through it. Every order is
 built and submitted by `ExecutionGateway` using alpaca-py directly, and the MCP server's

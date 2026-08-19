@@ -27,12 +27,12 @@ from typing import Any, Mapping
 
 from alpaca.trading.enums import OrderSide, PositionIntent
 
+from aegis.agents.llm import LLMClient
 from aegis.core.option_chain import fetch_chain
 from aegis.core.proposal import OrderLeg, PortfolioState, TradeProposal
 
 log = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "claude-sonnet-4-6"
 CONTRACT_MULTIPLIER = Decimal(100)
 DEFAULT_TARGET_DTE = 30
 DEFAULT_MONEYNESS = 0.05
@@ -103,9 +103,8 @@ class ResearchAgent:
         self,
         mandate: Mapping[str, Any],
         chain_fetcher=fetch_chain,
-        llm_client: Any | None = None,
+        llm_client: LLMClient | None = None,
         *,
-        model: str = DEFAULT_MODEL,
         contract_type: str = "put",
         widths: tuple[Decimal, ...] = DEFAULT_WIDTHS,
         target_dte: int = DEFAULT_TARGET_DTE,
@@ -115,7 +114,6 @@ class ResearchAgent:
         self._mandate = mandate
         self._fetch = chain_fetcher
         self._llm = llm_client
-        self._model = model
         self._contract_type = contract_type
         self._widths = tuple(_dec(w) for w in widths)
         self._target_dte = target_dte
@@ -442,23 +440,12 @@ class ResearchAgent:
         )
 
         try:
-            response = self._llm.messages.create(
-                model=self._model,
-                max_tokens=1024,
-                system=_THESIS_SYSTEM,
-                messages=[{"role": "user", "content": facts}],
-            )
+            thesis = self._llm.complete(system=_THESIS_SYSTEM, user=facts)
         except Exception as exc:  # the trade does not depend on the model
             log.warning("thesis generation failed (%s); proposing without one", exc)
             return None
 
-        thesis = _text_of(response).strip()
-        return thesis or None
-
-
-def _text_of(response: Any) -> str:
-    """Concatenate text blocks, skipping thinking and other block types."""
-    blocks = getattr(response, "content", None) or []
-    return "".join(
-        getattr(block, "text", "") for block in blocks if getattr(block, "type", None) == "text"
-    )
+        if not thesis:
+            log.info("model returned no thesis; proposing %s without one", proposal.proposal_id)
+            return None
+        return thesis.strip() or None

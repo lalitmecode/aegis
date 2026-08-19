@@ -4,6 +4,13 @@ requests>=2.34.2         # alpaca-py's HTTP layer; its ConnectionError drives re
 python-dotenv>=1.2.3     # loads ALPACA_* from .env
 PyYAML>=6.0.3            # parses config/mandate.yaml
 
+# LLM providers. Either one satisfies aegis/agents/llm.py, which picks a
+# backend from the environment; with neither key set the agents degrade and
+# the trade is unaffected.
+google-genai>=2.18.1     # GEMINI_API_KEY -> GeminiClient (gemini-2.5-flash)
+# anthropic>=0.122.0     # ANTHROPIC_API_KEY -> AnthropicClient; imported lazily,
+                         # so uncomment only if you use this backend
+
 # Optional: adds httpx connection errors to the transient-retry set.
 # aegis/core/retry.py imports it under try/except and works without it.
 httpx>=0.28.1

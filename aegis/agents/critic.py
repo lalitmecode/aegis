@@ -29,7 +29,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-DEFAULT_MODEL = "claude-sonnet-4-6"
+from aegis.agents.llm import LLMClient
 
 log = logging.getLogger(__name__)
 
@@ -80,16 +80,8 @@ class Critique:
 class CriticAgent:
     """Sends a proposal and the mandate to Claude and collects objections."""
 
-    def __init__(
-        self,
-        llm_client: Any | None = None,
-        *,
-        model: str = DEFAULT_MODEL,
-        max_tokens: int = 4096,
-    ) -> None:
+    def __init__(self, llm_client: LLMClient | None = None) -> None:
         self._llm = llm_client
-        self._model = model
-        self._max_tokens = max_tokens
 
     def review(self, proposal, mandate: Mapping[str, Any] | str) -> Critique:
         """Review ``proposal`` against ``mandate``. Never raises."""
@@ -100,19 +92,19 @@ class CriticAgent:
             )
 
         try:
-            response = self._llm.messages.create(
-                model=self._model,
-                max_tokens=self._max_tokens,
-                thinking={"type": "adaptive"},
-                output_config={"effort": "medium"},
+            response = self._llm.complete(
                 system=_CRITIC_SYSTEM,
-                messages=[{"role": "user", "content": self._prompt(proposal, mandate)}],
+                user=self._prompt(proposal, mandate),
+                json_mode=True,
             )
         except Exception as exc:
             log.warning("critic call failed: %s", exc)
             return Critique(False, (f"critic could not run: {type(exc).__name__}: {exc}",))
 
-        raw = _text_of(response).strip()
+        if not response:
+            return Critique(False, ("critic returned nothing; treating as unreviewed",))
+
+        raw = response.strip()
         parsed = _parse_json_object(raw)
         if parsed is None:
             log.warning("critic returned unparseable output")
@@ -161,20 +153,12 @@ def _mandate_text(mandate: Mapping[str, Any] | str) -> str:
     return yaml.safe_dump(dict(mandate), sort_keys=False)
 
 
-def _text_of(response: Any) -> str:
-    """Concatenate text blocks, skipping thinking blocks."""
-    blocks = getattr(response, "content", None) or []
-    return "".join(
-        getattr(block, "text", "") for block in blocks if getattr(block, "type", None) == "text"
-    )
-
-
 def _parse_json_object(raw: str) -> dict | None:
     """Pull the first JSON object out of a response.
 
-    Structured outputs are not available on this model, so the response is
-    prose-shaped by instruction rather than by schema and has to be parsed
-    defensively.
+    Backends with native JSON mode return a bare object, but the prompt asks
+    for JSON on every backend, so this tolerates prose and code fences around
+    it and fails closed when there is nothing parseable.
     """
     if not raw:
         return None

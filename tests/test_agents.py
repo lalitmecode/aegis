@@ -82,24 +82,18 @@ class StubFetcher:
 
 
 class StubLLM:
-    """Stands in for anthropic.Anthropic(); `.messages.create(...)` records calls."""
+    """An LLMClient that returns canned text and records how it was called."""
 
     def __init__(self, text: str = "Sells premium below support.", error=None):
         self.text = text
         self.error = error
         self.calls: list[dict] = []
-        self.messages = self  # so llm.messages.create(...) resolves here
 
-    def create(self, **kwargs):
-        self.calls.append(kwargs)
+    def complete(self, system: str, user: str, *, json_mode: bool = False) -> str | None:
+        self.calls.append({"system": system, "user": user, "json_mode": json_mode})
         if self.error:
             raise self.error
-        return SimpleNamespace(
-            content=[
-                SimpleNamespace(type="thinking", thinking="..."),
-                SimpleNamespace(type="text", text=self.text),
-            ]
-        )
+        return self.text
 
 
 class FakeSession:
@@ -266,8 +260,8 @@ def test_the_llm_is_asked_only_for_a_thesis(mandate, state):
     assert len(llm.calls) == 1
     assert proposal.thesis == "Short the 750 put against support at 745."
     call = llm.calls[0]
-    assert call["model"] == "claude-sonnet-4-6"
     assert "cannot change any of it" in call["system"]
+    assert call["json_mode"] is False, "a thesis is prose, not JSON"
 
 
 def test_the_trade_is_identical_with_and_without_the_llm(mandate, state):
@@ -375,10 +369,11 @@ def test_critic_tolerates_prose_around_the_json(mandate, proposal):
 def test_critic_prompt_carries_the_mandate_and_the_thesis(mandate, proposal):
     llm = StubLLM(text='{"concerns": [], "clause_refs": []}')
     CriticAgent(llm).review(proposal, mandate)
-    prompt = llm.calls[0]["messages"][0]["content"]
-    assert "max_loss_per_trade_usd" in prompt
-    assert proposal.thesis in prompt
-    assert "cannot approve this trade" in llm.calls[0]["system"]
+    call = llm.calls[0]
+    assert "max_loss_per_trade_usd" in call["user"]
+    assert proposal.thesis in call["user"]
+    assert "cannot approve this trade" in call["system"]
+    assert call["json_mode"] is True, "the critic asks for a JSON object"
 
 
 # --------------------------------------------------------------------------
