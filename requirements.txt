@@ -1,0 +1,12 @@
+# Runtime
+alpaca-py>=0.44.0        # trading client, option chain data, order models
+requests>=2.34.2         # alpaca-py's HTTP layer; its ConnectionError drives retries
+python-dotenv>=1.2.3     # loads ALPACA_* from .env
+PyYAML>=6.0.3            # parses config/mandate.yaml
+
+# Optional: adds httpx connection errors to the transient-retry set.
+# aegis/core/retry.py imports it under try/except and works without it.
+httpx>=0.28.1
+
+# Development
+pytest>=9.1.1
