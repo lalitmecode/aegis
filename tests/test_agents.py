@@ -451,3 +451,42 @@ def test_the_gateway_has_no_way_to_accept_a_critique():
 
     params = inspect.signature(gateway.ExecutionGateway.__init__).parameters
     assert "critic" not in params and "critique" not in params
+
+
+# --------------------------------------------------------------------------
+# spread width is measured in points, not strike counts
+# --------------------------------------------------------------------------
+
+
+def fine_ladder() -> dict:
+    """A 1-point strike ladder, as SPY actually lists."""
+    return {
+        strike: (round(-0.20 - 0.015 * (strike - 745), 4), round(3.00 + 0.22 * (strike - 745), 2))
+        for strike in range(745, 761)
+    }
+
+
+def test_width_is_points_not_strike_counts(mandate, state):
+    """On a 1-point ladder, one strike out would be a 1-point spread."""
+    proposal = build_agent(mandate, StubFetcher(chain_from(fine_ladder()))).propose("SPY", state)
+    assert proposal is not None
+
+    short_strike = int(parse_occ(proposal.legs[0].symbol))
+    long_strike = int(parse_occ(proposal.legs[1].symbol))
+    width = short_strike - long_strike
+
+    assert width == 5, f"expected a 5-point spread, got {width} points"
+    assert width != 1, "counting strikes would have produced a 1-point spread here"
+
+
+def test_a_coarse_ladder_still_yields_the_same_width(mandate, state):
+    """The 5-point ladder gives a 5-point spread too: the unit is the point."""
+    proposal = build_agent(mandate).propose("SPY", state)
+    width = int(parse_occ(proposal.legs[0].symbol)) - int(parse_occ(proposal.legs[1].symbol))
+    assert width == 5
+
+
+def parse_occ(symbol: str) -> Decimal:
+    from aegis.core.proposal import parse_occ_symbol
+
+    return parse_occ_symbol(symbol).strike

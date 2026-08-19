@@ -164,9 +164,13 @@ taken by accident. Read market data through anything; write through one gate.
 - Approval tokens are tamper-evident against proposal edits, not against forgery. Anything that
   can construct an `ApprovalToken` can authorise a trade; an HMAC over the fields is the fix if
   operators are not trusted.
-- The verifier compares against Alpaca's indicative feed unless the account has signed the OPRA
-  agreement. Indicative quotes are synthetic and its greeks are computed, so the delta tolerance
-  is a coarse instrument against a lying agent, not a precise one.
+- Quotes default to Alpaca's `indicative` feed, which needs no OPRA entitlement but is a
+  synthetic NBBO with computed greeks. That assumption is a visible parameter rather than a
+  silent one: `FEED_PRECISION` maps each feed to the delta tolerance it earns (indicative 0.05,
+  OPRA 0.02) and the verifier reads its tolerance from the feed the chain actually came back on.
+  Signing the OPRA agreement and passing `feed="opra"` tightens the check automatically. The
+  tolerance still bounds how small a misreport the verifier can catch — it will spot a 0.10
+  claimed against an observed 0.45, not a two-cent shading.
 - The mandate prohibits opening within 7 days of earnings. Nothing enforces it; that needs a
   corporate-actions feed.
 - `aegis/agents/` is empty. The proposer and critic are not built yet -- this repo is the half

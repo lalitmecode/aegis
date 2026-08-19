@@ -325,6 +325,18 @@ def test_within_the_opening_settle_window_is_refused(mandate, proposal, state):
     assert "minutes of the open" in why(decision)
 
 
+def test_before_the_open_does_not_claim_the_settle_window(mandate, proposal, state):
+    """Pre-market is refused for being closed, not for being just after the open."""
+    pre_open = MARKET_OPEN - timedelta(hours=4)
+    decision = build_guard(
+        mandate, now=pre_open, session=FakeSession(is_open=False)
+    ).evaluate(proposal, state)
+
+    assert not decision.approved
+    assert any("market is closed" in r for r in decision.reasons)
+    assert not any("minutes of the open" in r for r in decision.reasons)
+
+
 def test_after_the_afternoon_cutoff_is_refused(mandate, proposal, state):
     late = datetime(2026, 8, 19, 19, 45, tzinfo=timezone.utc)  # 15:45 ET
     decision = build_guard(mandate, now=late).evaluate(proposal, state)

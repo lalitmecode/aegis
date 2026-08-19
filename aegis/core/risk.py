@@ -359,7 +359,9 @@ class RiskGuard:
             if settle is not None:
                 if session.opened_at is None:
                     reasons.append("market open time unknown; cannot honour the opening delay")
-                elif now < session.opened_at + timedelta(minutes=int(settle)):
+                elif session.opened_at <= now < session.opened_at + timedelta(
+                    minutes=int(settle)
+                ):
                     reasons.append(
                         f"within {settle} minutes of the open "
                         f"(opened {session.opened_at.isoformat()})"

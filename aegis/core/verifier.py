@@ -20,11 +20,12 @@ from datetime import date
 from decimal import Decimal
 from typing import Any, Callable, Mapping
 
-from aegis.core.option_chain import fetch_chain
+from aegis.core.option_chain import FEED_PRECISION, fetch_chain
 from aegis.core.proposal import TradeProposal, parse_occ_symbol
 
-#: Absolute delta difference tolerated between claim and observation.
-DEFAULT_TOLERANCE = Decimal("0.02")
+#: Fallback when the chain does not say which feed produced it. The strictest
+#: known precision: an unidentified feed does not get to buy leniency.
+UNKNOWN_FEED_TOLERANCE = min(FEED_PRECISION.values())
 
 #: Initial strike band. Widened once if the proposal's strikes fall outside it.
 _PROBE_MONEYNESS = 0.10
@@ -92,18 +93,21 @@ class ObservationVerifier:
     def __init__(
         self,
         chain_fetcher: Callable[..., Any] = fetch_chain,
-        tolerance: Decimal = DEFAULT_TOLERANCE,
+        tolerance: Decimal | None = None,
         *,
         min_open_interest: int,
         today: Callable[[], date] | None = None,
     ) -> None:
-        """``min_open_interest`` has no default on purpose.
+        """Neither ``tolerance`` nor ``min_open_interest`` has a default.
 
         The liquidity floor is a mandate decision, not a library constant --
-        see :meth:`from_mandate`.
+        see :meth:`from_mandate`. The delta tolerance is a property of the
+        quote feed, so leaving it None resolves it per chain from
+        :data:`~aegis.core.option_chain.FEED_PRECISION`; pass a value only to
+        override that.
         """
         self._fetch = chain_fetcher
-        self._tolerance = Decimal(str(tolerance))
+        self._tolerance = None if tolerance is None else Decimal(str(tolerance))
         self._min_open_interest = int(min_open_interest)
         self._today = today or date.today
 
@@ -112,7 +116,7 @@ class ObservationVerifier:
         cls,
         mandate: Mapping[str, Any],
         chain_fetcher: Callable[..., Any] = fetch_chain,
-        tolerance: Decimal = DEFAULT_TOLERANCE,
+        tolerance: Decimal | None = None,
         *,
         today: Callable[[], date] | None = None,
     ) -> "ObservationVerifier":
@@ -170,8 +174,9 @@ class ObservationVerifier:
                 continue
 
             listed = {contract.symbol: contract for contract in chain.contracts}
+            tolerance = self.tolerance_for(chain)
             for leg, parsed in entries:
-                leg_observed, leg_discrepancies = self._check_leg(leg, parsed, listed)
+                leg_observed, leg_discrepancies = self._check_leg(leg, parsed, listed, tolerance)
                 observed.append(leg_observed)
                 discrepancies.extend(leg_discrepancies)
 
@@ -183,7 +188,15 @@ class ObservationVerifier:
 
     # -- per-leg checks ----------------------------------------------------
 
-    def _check_leg(self, leg, parsed, listed) -> tuple[ObservedLeg, list[Discrepancy]]:
+    def tolerance_for(self, chain) -> Decimal:
+        """Delta tolerance for this chain: explicit override, else its feed's."""
+        if self._tolerance is not None:
+            return self._tolerance
+        return FEED_PRECISION.get(getattr(chain, "feed", None), UNKNOWN_FEED_TOLERANCE)
+
+    def _check_leg(
+        self, leg, parsed, listed, tolerance: Decimal
+    ) -> tuple[ObservedLeg, list[Discrepancy]]:
         found = listed.get(leg.symbol)
         if found is None:
             return (
@@ -210,7 +223,7 @@ class ObservationVerifier:
         )
         discrepancies: list[Discrepancy] = []
         discrepancies += self._check_quote(leg, observed)
-        discrepancies += self._check_delta(leg, observed)
+        discrepancies += self._check_delta(leg, observed, tolerance)
         discrepancies += self._check_open_interest(leg, observed)
         return observed, discrepancies
 
@@ -227,7 +240,7 @@ class ObservationVerifier:
             ]
         return []
 
-    def _check_delta(self, leg, observed: ObservedLeg) -> list[Discrepancy]:
+    def _check_delta(self, leg, observed: ObservedLeg, tolerance: Decimal) -> list[Discrepancy]:
         claimed = _dec(leg.delta)
         if claimed is None:
             return [
@@ -251,7 +264,7 @@ class ObservationVerifier:
             ]
 
         drift = abs(claimed - observed.delta)
-        if drift > self._tolerance:
+        if drift > tolerance:
             return [
                 Discrepancy(
                     leg.symbol,
@@ -259,7 +272,7 @@ class ObservationVerifier:
                     claimed,
                     observed.delta,
                     f"claimed {claimed} but observed {observed.delta} "
-                    f"(off by {drift}, tolerance {self._tolerance})",
+                    f"(off by {drift}, tolerance {tolerance})",
                 )
             ]
         return []

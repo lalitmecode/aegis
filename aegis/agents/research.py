@@ -37,8 +37,16 @@ CONTRACT_MULTIPLIER = Decimal(100)
 DEFAULT_TARGET_DTE = 30
 DEFAULT_MONEYNESS = 0.05
 
-#: Widths to try, in strikes further out from the short leg.
-LONG_LEG_OFFSETS = (1, 2)
+#: Candidate spread widths, in points of underlying price.
+#:
+#: Strike ladders are not a common unit: "two strikes out" is 2 points on SPY's
+#: 1-point ladder and 10 points on a 5-point ladder, so counting strikes makes
+#: the width of the risk an accident of the chain's granularity.
+DEFAULT_WIDTHS = (Decimal(5), Decimal(10))
+
+#: How far the chosen long strike may sit from the requested width before the
+#: candidate is discarded as not really that spread.
+_WIDTH_TOLERANCE = Decimal("0.5")
 
 _THESIS_SYSTEM = """You are the research analyst for Aegis, a mandate-governed \
 options trading agent.
@@ -85,6 +93,7 @@ class ResearchAgent:
         *,
         model: str = DEFAULT_MODEL,
         contract_type: str = "put",
+        widths: tuple[Decimal, ...] = DEFAULT_WIDTHS,
         target_dte: int = DEFAULT_TARGET_DTE,
         moneyness: float = DEFAULT_MONEYNESS,
         today=None,
@@ -94,6 +103,7 @@ class ResearchAgent:
         self._llm = llm_client
         self._model = model
         self._contract_type = contract_type
+        self._widths = tuple(_dec(w) for w in widths)
         self._target_dte = target_dte
         self._moneyness = moneyness
         self._today = today or date.today
@@ -209,9 +219,11 @@ class ResearchAgent:
             if not self._eligible(short, min_oi) or abs(_dec(short.delta)) > delta_cap:
                 continue
             candidates = [
-                self._build_spread(short, ladder[i - offset])
-                for offset in LONG_LEG_OFFSETS
-                if i - offset >= 0 and self._eligible(ladder[i - offset], min_oi)
+                self._build_spread(short, long)
+                for long in (
+                    self._leg_at_width(ladder, i, width, min_oi) for width in self._widths
+                )
+                if long is not None
             ]
             viable = [
                 s
@@ -229,6 +241,24 @@ class ResearchAgent:
         """Contracts of the traded type, furthest out-of-the-money first."""
         legs = [c for c in chain.contracts if c.type == self._contract_type]
         return sorted(legs, key=lambda c: c.strike, reverse=self._contract_type == "call")
+
+    def _leg_at_width(self, ladder, short_index: int, width: Decimal, min_oi: int):
+        """The listed strike closest to ``width`` points further out of the money.
+
+        Returns None when the chain lists nothing near that distance, rather
+        than silently substituting a spread of a different width.
+        """
+        short = ladder[short_index]
+        sign = -1 if self._contract_type == "put" else 1
+        target = _dec(short.strike) + sign * width
+
+        candidates = [c for c in ladder[:short_index] if self._eligible(c, min_oi)]
+        if not candidates:
+            return None
+        nearest = min(candidates, key=lambda c: abs(_dec(c.strike) - target))
+        if abs(_dec(nearest.strike) - target) > width * _WIDTH_TOLERANCE:
+            return None
+        return nearest
 
     @staticmethod
     def _index_of(ladder, contract) -> int:

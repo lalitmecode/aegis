@@ -10,6 +10,17 @@ Neither endpoint is sufficient on its own:
 caller sees delta and open interest side by side -- the two fields
 ``config/mandate.yaml`` screens on (``delta_limits.short_leg_abs_delta_max``
 and ``universe.min_open_interest``).
+
+**Feed.** Quotes default to Alpaca's ``indicative`` feed, which is available
+without an OPRA entitlement. Indicative is a *synthetic* NBBO with greeks and
+implied volatility computed by Alpaca rather than disseminated by the
+exchanges. It is good enough to catch an agent misreporting a 0.45-delta strike
+as 0.10; it is not good enough to treat a two-cent delta difference as a lie.
+:data:`FEED_PRECISION` records how much slack each feed earns, and the
+observation verifier reads its tolerance from there rather than assuming one.
+
+Pass ``feed="opra"`` once the account has signed the OPRA agreement -- the
+quotes get sharper and the verifier's tolerance tightens automatically.
 """
 
 from __future__ import annotations
@@ -17,6 +28,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 
 from alpaca.data.historical.option import OptionHistoricalDataClient
 from alpaca.data.historical.stock import StockHistoricalDataClient
@@ -24,6 +36,19 @@ from alpaca.data.requests import OptionChainRequest, StockLatestTradeRequest
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import AssetStatus, ContractType
 from alpaca.trading.requests import GetOptionContractsRequest
+
+#: Quote feed used when the caller does not name one. ``indicative`` needs no
+#: OPRA entitlement; ``opra`` is the official exchange feed.
+DEFAULT_FEED = "indicative"
+
+#: Delta tolerance each feed earns, in absolute delta. Indicative greeks are
+#: computed rather than disseminated, so they deserve more slack than OPRA's.
+#: Unknown or unset feeds fall back to the strictest value: a feed we cannot
+#: identify does not get to buy leniency.
+FEED_PRECISION: dict[str, Decimal] = {
+    "indicative": Decimal("0.05"),
+    "opra": Decimal("0.02"),
+}
 
 # Defaults track config/mandate.yaml: strategy.expiry_window_days.
 MANDATE_EXPIRY_WINDOW = (7, 45)
@@ -192,7 +217,7 @@ def fetch_chain(
     moneyness: float = DEFAULT_MONEYNESS,
     expiry_window: tuple[int, int] = MANDATE_EXPIRY_WINDOW,
     contract_type: str | None = None,
-    feed: str | None = None,
+    feed: str | None = DEFAULT_FEED,
     clients: Clients | None = None,
     today: date | None = None,
 ) -> Chain:
@@ -207,8 +232,9 @@ def fetch_chain(
         expiry_window: ``(min_dte, max_dte)`` bounding which expiries are
             eligible. Defaults to the mandate's 7-45 day window.
         contract_type: ``"call"``, ``"put"``, or None for both.
-        feed: ``"opra"`` or ``"indicative"``. None lets Alpaca choose, which
-            is ``indicative`` unless the account has an OPRA subscription.
+        feed: ``"opra"`` or ``"indicative"``. Defaults to ``indicative``,
+            which needs no OPRA entitlement; see :data:`FEED_PRECISION` for
+            what that costs in delta precision. None lets Alpaca choose.
         clients: Reuse existing clients; built from the environment if None.
         today: Override the reference date, for testing.
 
@@ -346,7 +372,7 @@ if __name__ == "__main__":
     parser.add_argument("--dte", type=int, default=DEFAULT_TARGET_DTE)
     parser.add_argument("--moneyness", type=float, default=DEFAULT_MONEYNESS)
     parser.add_argument("--type", choices=("call", "put"), default=None)
-    parser.add_argument("--feed", choices=("opra", "indicative"), default=None)
+    parser.add_argument("--feed", choices=("opra", "indicative"), default=DEFAULT_FEED)
     args = parser.parse_args()
 
     chain = fetch_chain(

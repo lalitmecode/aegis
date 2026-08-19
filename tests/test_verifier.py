@@ -33,13 +33,14 @@ def contract(symbol, strike, delta, open_interest=2804, bid=6.50, ask=6.79):
     )
 
 
-def chain(*contracts, spot=767.35):
+def chain(*contracts, spot=767.35, feed=None):
     return Chain(
         underlying="SPY",
         spot=spot,
         expiration=EXPIRY,
         dte=30,
         contracts=tuple(contracts),
+        feed=feed,
     )
 
 
@@ -334,3 +335,61 @@ def test_the_mandate_floor_is_what_gets_enforced():
     assert not result.verified
     assert result.discrepancies[0].field == "open_interest"
     assert "3000" in result.discrepancies[0].detail
+
+
+# --------------------------------------------------------------------------
+# the delta tolerance is a property of the quote feed
+# --------------------------------------------------------------------------
+
+
+def test_tolerance_widens_when_the_feed_is_indicative():
+    """Indicative greeks are computed, not disseminated, so they earn slack."""
+    from aegis.core.option_chain import FEED_PRECISION
+
+    verifier = build_verifier(StubFetcher(HONEST_CHAIN))
+    assert verifier.tolerance_for(chain(feed="indicative")) == Decimal("0.05")
+    assert verifier.tolerance_for(chain(feed="opra")) == Decimal("0.02")
+    assert FEED_PRECISION["indicative"] > FEED_PRECISION["opra"]
+
+
+def test_an_unknown_feed_gets_the_strictest_tolerance():
+    """A feed we cannot identify does not get to buy leniency."""
+    verifier = build_verifier(StubFetcher(HONEST_CHAIN))
+    assert verifier.tolerance_for(chain(feed=None)) == Decimal("0.02")
+
+
+def test_the_same_drift_passes_on_indicative_and_fails_on_opra():
+    """The data-quality assumption is now visible in the verdict."""
+    legs = (contract(SHORT, Decimal("753"), -0.33), contract(LONG, Decimal("748"), -0.22))
+    proposal = proposal_with(short_delta=Decimal("-0.30"))  # 0.03 of drift
+
+    indicative = build_verifier(StubFetcher(chain(*legs, feed="indicative"))).verify(proposal)
+    opra = build_verifier(StubFetcher(chain(*legs, feed="opra"))).verify(proposal)
+
+    assert indicative.verified, indicative.summary()
+    assert not opra.verified
+    assert opra.discrepancies[0].field == "delta"
+
+
+def test_drift_beyond_even_the_indicative_tolerance_still_fails():
+    legs = (contract(SHORT, Decimal("753"), -0.45), contract(LONG, Decimal("748"), -0.22))
+    result = build_verifier(StubFetcher(chain(*legs, feed="indicative"))).verify(
+        proposal_with(short_delta=Decimal("-0.10"))
+    )
+    assert not result.verified
+    assert "0.05" in result.discrepancies[0].detail
+
+
+def test_an_explicit_tolerance_overrides_the_feed():
+    verifier = build_verifier(StubFetcher(HONEST_CHAIN), tolerance=Decimal("0.001"))
+    assert verifier.tolerance_for(chain(feed="indicative")) == Decimal("0.001")
+
+
+def test_the_default_feed_needs_no_opra_entitlement():
+    """This account has no OPRA agreement; defaulting to it would 403 every fetch."""
+    import inspect
+
+    from aegis.core.option_chain import DEFAULT_FEED, fetch_chain
+
+    assert DEFAULT_FEED == "indicative"
+    assert inspect.signature(fetch_chain).parameters["feed"].default == "indicative"
