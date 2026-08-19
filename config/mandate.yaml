@@ -1,0 +1,66 @@
+# AEGIS INVESTMENT MANDATE v1
+# The single source of truth for what this agent may and may not do.
+# The critic agent validates every proposal against this file.
+# The risk guard enforces the numeric limits deterministically.
+
+mandate:
+  name: "Aegis Defined-Risk Options Mandate"
+  version: 1
+  owner: "Aegis Labs"
+  account_type: "paper"
+
+objective: >
+  Generate income from short-dated, defined-risk options spreads on large-cap
+  US equities. Capital preservation takes precedence over return. The agent
+  must never hold a position whose maximum loss is unknown or unbounded.
+
+universe:
+  allowed_symbols: [AAPL, MSFT, NVDA, AMZN, GOOGL, META, SPY, QQQ]
+  rationale: "High liquidity, tight option spreads, reliable Greeks."
+  prohibited:
+    - "Any symbol not in allowed_symbols"
+    - "Earnings within 7 calendar days"
+    - "Symbols with option open interest below 500 at the chosen strike"
+
+strategy:
+  permitted_structures:
+    - vertical_credit_spread
+    - vertical_debit_spread
+    - iron_condor
+  prohibited_structures:
+    - naked_short_call
+    - naked_short_put
+    - any_undefined_risk_position
+  expiry_window_days:
+    min: 7
+    max: 45
+  delta_limits:
+    short_leg_abs_delta_max: 0.30
+  min_credit_to_max_loss_ratio: 0.20
+
+risk_limits:
+  max_loss_per_trade_usd: 500
+  max_loss_per_trade_pct_of_equity: 1.0
+  max_open_positions: 5
+  max_positions_per_symbol: 1
+  # Portfolio delta is measured in share-equivalents (contract delta x 100 x qty)
+  max_portfolio_delta_abs: 100
+  max_total_capital_at_risk_pct: 5.0
+  min_buying_power_buffer_usd: 25000
+
+timing:
+  market_hours_only: true
+  no_new_positions_after: "15:30"   # US/Eastern
+  no_new_positions_within_minutes_of_open: 15
+
+governance:
+  human_approval_required: true
+  critic_must_pass: true
+  risk_guard_must_pass: true
+  log_every_decision: true
+  rejection_requires_written_reason: true
+
+exit_rules:
+  take_profit_pct_of_max_credit: 50
+  stop_loss_multiple_of_credit: 2.0
+  close_before_expiry_days: 2
