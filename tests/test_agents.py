@@ -490,3 +490,82 @@ def parse_occ(symbol: str) -> Decimal:
     from aegis.core.proposal import parse_occ_symbol
 
     return parse_occ_symbol(symbol).strike
+
+
+# --------------------------------------------------------------------------
+# among qualifying candidates, the best economics wins
+# --------------------------------------------------------------------------
+
+
+#: 750/745 qualifies (ratio 0.43) and 750/740 qualifies better (ratio 1.00).
+#: The narrower one would win under a width preference.
+RATIO_LADDER = {
+    750: (-0.29, 8.00),
+    745: (-0.25, 6.50),
+    740: (-0.20, 3.00),
+}
+
+#: Both widths yield ratio 0.25 exactly; only the contract count separates them.
+TIE_LADDER = {
+    750: (-0.29, 8.00),
+    749: (-0.27, 7.80),
+    748: (-0.25, 7.60),
+}
+
+
+def test_the_wider_spread_wins_when_it_has_the_better_ratio(mandate, state):
+    """Both clear the mandate; the wider one collects more credit per dollar risked."""
+    proposal = build_agent(mandate, StubFetcher(chain_from(RATIO_LADDER))).propose("SPY", state)
+    assert proposal is not None
+
+    short = parse_occ(proposal.legs[0].symbol)
+    long = parse_occ(proposal.legs[1].symbol)
+    assert short == Decimal("750")
+    assert long == Decimal("740"), "expected the 10-point spread, not the narrower 5-point one"
+    assert short - long == Decimal("10")
+
+    # Why it won: 500/500 = 1.00 against the 5-point spread's 150/350 = 0.43.
+    assert proposal.max_loss_usd == Decimal("500.00")
+    assert proposal.limit_price == Decimal("5.00")
+    assert proposal.quantity == 1
+
+
+def test_the_narrower_candidate_really_did_qualify(mandate, state):
+    """Guards the test above: the 5-point spread is rejected on merit, not eligibility."""
+    from aegis.agents.research import ResearchAgent
+
+    only_narrow = ResearchAgent(
+        mandate,
+        StubFetcher(chain_from(RATIO_LADDER)),
+        None,
+        widths=(Decimal(5),),
+        today=lambda: TODAY,
+    ).propose("SPY", state)
+
+    assert only_narrow is not None, "the 5-point spread passes every mandate check on its own"
+    assert parse_occ(only_narrow.legs[1].symbol) == Decimal("745")
+
+
+def test_equal_ratios_break_toward_fewer_contracts(mandate, state):
+    """Both ratios are 0.25; the 2-point spread needs 3 contracts, the 1-point needs 6."""
+    from aegis.agents.research import ResearchAgent
+
+    proposal = ResearchAgent(
+        mandate,
+        StubFetcher(chain_from(TIE_LADDER)),
+        None,
+        widths=(Decimal(1), Decimal(2)),
+        today=lambda: TODAY,
+    ).propose("SPY", state)
+
+    assert proposal is not None
+    assert parse_occ(proposal.legs[1].symbol) == Decimal("748"), "expected the 2-point spread"
+    assert proposal.quantity == 3
+
+
+def test_the_chosen_spread_still_passes_the_real_risk_guard(mandate, state):
+    """Preferring economics must not smuggle anything past the mandate."""
+    proposal = build_agent(mandate, StubFetcher(chain_from(RATIO_LADDER))).propose("SPY", state)
+    guard = RiskGuard(mandate, session=FakeSession(), clock=lambda: NOW)
+    decision = guard.evaluate(proposal, state)
+    assert decision.approved, decision.reasons

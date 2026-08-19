@@ -81,6 +81,20 @@ class _Spread:
     per_contract_loss: Decimal
     per_contract_delta: Decimal
 
+    @property
+    def ratio(self) -> Decimal:
+        """Credit collected per dollar of risk taken."""
+        return self.credit * CONTRACT_MULTIPLIER / self.per_contract_loss
+
+
+@dataclass(frozen=True, slots=True)
+class _Selection:
+    """The chosen spread and its size, or the reason there is neither."""
+
+    spread: _Spread | None = None
+    quantity: int = 0
+    reason: str | None = None
+
 
 class ResearchAgent:
     """Proposes one defined-risk spread, or nothing."""
@@ -146,26 +160,23 @@ class ResearchAgent:
                 underlying, "mandate does not define universe.min_open_interest"
             )
 
-        spread = self._select_spread(chain, strategy)
-        if spread is None:
-            return self._no_trade(
-                underlying,
-                "no strike pair satisfies the delta ceiling, liquidity floor, "
-                "and credit ratio",
-            )
-
-        quantity = self._size(spread, state, limits)
-        if quantity < 1:
-            return self._no_trade(
-                underlying,
-                f"a single {spread.width}-wide spread (${spread.per_contract_loss} "
-                f"max loss) does not fit the risk limits",
-            )
+        selection = self._select_spread(chain, strategy, state, limits)
+        if selection.spread is None:
+            return self._no_trade(underlying, selection.reason)
+        spread, quantity = selection.spread, selection.quantity
 
         proposal = self._build(underlying, chain, spread, quantity)
         thesis = self._write_thesis(proposal, chain, spread)
         proposal = self._with_thesis(proposal, thesis)
 
+        log.info(
+            "selected %s/%s at %s points wide: ratio %.3f, %d contract(s)",
+            spread.short.strike,
+            spread.long.strike,
+            spread.width,
+            spread.ratio,
+            quantity,
+        )
         log.info(
             "proposing %s %s %s/%s x%d for %s credit (max loss $%s)",
             proposal.proposal_id,
@@ -198,44 +209,74 @@ class ResearchAgent:
                 return f"already holding {held} position(s) in {underlying}"
         return None
 
-    def _select_spread(self, chain, strategy) -> _Spread | None:
-        """Pick the short leg by delta, then define the risk with a long leg."""
+    def _select_spread(self, chain, strategy, state, limits) -> _Selection:
+        """Pick the short leg by delta, then choose the width by economics.
+
+        Sizing scales quantity up to fill the per-trade dollar cap, so a wide
+        spread at one contract and a narrow one at five carry roughly the same
+        total risk. What differs is leg count, and with it commission and
+        slippage. So among candidates that clear every mandate check, the best
+        credit-to-max-loss ratio wins -- the better economics at the same risk
+        -- breaking ties toward fewer contracts, then toward narrower width.
+        """
         delta_cap = _dec((strategy.get("delta_limits") or {}).get("short_leg_abs_delta_max", 1))
         min_ratio = strategy.get("min_credit_to_max_loss_ratio")
         min_oi = self._min_open_interest()
         if min_oi is None:
-            return None  # caller reports it; see propose()
+            return _Selection(reason="mandate does not define universe.min_open_interest")
 
         ladder = self._otm_ladder(chain)
         if not ladder:
-            return None
+            return _Selection(reason="chain lists no contracts of the traded type")
 
         anchor = chain.nearest_delta(delta_cap, self._contract_type)
         start = self._index_of(ladder, anchor) if anchor else len(ladder) - 1
+        unaffordable: list[_Spread] = []
 
         # Walk further out-of-the-money until the short leg clears the mandate.
         for i in range(start, -1, -1):
             short = ladder[i]
             if not self._eligible(short, min_oi) or abs(_dec(short.delta)) > delta_cap:
                 continue
-            candidates = [
-                self._build_spread(short, long)
-                for long in (
-                    self._leg_at_width(ladder, i, width, min_oi) for width in self._widths
-                )
-                if long is not None
-            ]
+
             viable = [
-                s
-                for s in candidates
-                if s is not None
-                and s.credit > 0
-                and (min_ratio is None or s.credit * CONTRACT_MULTIPLIER / s.per_contract_loss >= _dec(min_ratio))
+                spread
+                for spread in (
+                    self._build_spread(short, long)
+                    for long in (
+                        self._leg_at_width(ladder, i, width, min_oi) for width in self._widths
+                    )
+                    if long is not None
+                )
+                if spread is not None
+                and spread.credit > 0
+                and (min_ratio is None or spread.ratio >= _dec(min_ratio))
             ]
-            if viable:
-                # Capital preservation takes precedence: narrowest risk wins.
-                return min(viable, key=lambda s: s.per_contract_loss)
-        return None
+            if not viable:
+                continue
+
+            sized = [(spread, self._size(spread, state, limits)) for spread in viable]
+            affordable = [(spread, qty) for spread, qty in sized if qty >= 1]
+            if not affordable:
+                unaffordable.extend(spread for spread, _ in sized)
+                continue
+
+            spread, quantity = max(
+                affordable,
+                key=lambda pair: (pair[0].ratio, -pair[1], -pair[0].width),
+            )
+            return _Selection(spread=spread, quantity=quantity)
+
+        if unaffordable:
+            cheapest = min(unaffordable, key=lambda s: s.per_contract_loss)
+            return _Selection(
+                reason=f"the cheapest compliant spread ({cheapest.width} points wide, "
+                f"${cheapest.per_contract_loss} max loss) does not fit the risk limits"
+            )
+        return _Selection(
+            reason="no strike pair satisfies the delta ceiling, liquidity floor, "
+            "and credit ratio"
+        )
 
     def _otm_ladder(self, chain) -> list:
         """Contracts of the traded type, furthest out-of-the-money first."""
