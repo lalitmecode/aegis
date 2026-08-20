@@ -62,10 +62,40 @@ class LLMClient(Protocol):
         """
         ...
 
+    @property
+    def model(self) -> str:
+        """The model id actually in use, after any environment override."""
+        ...
+
+    @property
+    def name(self) -> str:
+        """Human-readable label for whatever produced the text."""
+        ...
+
 
 # --------------------------------------------------------------------------
 # retry
 # --------------------------------------------------------------------------
+
+
+def _display_name(model: str) -> str:
+    """Turn a model id into a label: ``claude-sonnet-4-6`` -> ``Claude Sonnet 4.6``.
+
+    Derived rather than hardcoded. A constant per class would go stale the
+    moment ``GEMINI_MODEL`` or ``ANTHROPIC_MODEL`` points somewhere else --
+    reintroducing exactly the drift this label exists to prevent.
+    """
+    parts: list[str] = []
+    for segment in model.split("-"):
+        numeric = segment.replace(".", "").isdigit()
+        if numeric and parts and parts[-1].replace(".", "").isdigit():
+            # Anthropic spells versions with dashes: 4-6 is 4.6.
+            parts[-1] = f"{parts[-1]}.{segment}"
+        elif numeric:
+            parts.append(segment)
+        else:
+            parts.append(segment.capitalize())
+    return " ".join(parts) or model
 
 
 def _model_from_env(variable: str, default: str) -> str:
@@ -192,6 +222,10 @@ class AnthropicClient(_Backend):
     def model(self) -> str:
         return self._model
 
+    @property
+    def name(self) -> str:
+        return _display_name(self._model)
+
 
 def _anthropic_rate_limited(exc: BaseException) -> bool:
     if getattr(exc, "status_code", None) == 429:
@@ -258,6 +292,10 @@ class GeminiClient(_Backend):
     def model(self) -> str:
         return self._model
 
+    @property
+    def name(self) -> str:
+        return _display_name(self._model)
+
 
 def _gemini_rate_limited(exc: BaseException) -> bool:
     return getattr(exc, "code", None) == 429 or getattr(exc, "status", None) == "RESOURCE_EXHAUSTED"
@@ -272,6 +310,10 @@ class NullClient:
     @property
     def model(self) -> str:
         return "none"
+
+    @property
+    def name(self) -> str:
+        return "no model"
 
 
 # --------------------------------------------------------------------------

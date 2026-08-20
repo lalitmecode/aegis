@@ -172,7 +172,7 @@ def render_portfolio(state: PortfolioState) -> None:
     console.print(Panel(table, title="Portfolio state", border_style="cyan"))
 
 
-def render_proposal(proposal) -> None:
+def render_proposal(proposal, llm) -> None:
     legs = Table(box=None, pad_edge=False)
     legs.add_column("side")
     legs.add_column("contract")
@@ -201,7 +201,8 @@ def render_proposal(proposal) -> None:
     console.print(Panel(legs, title=f"Proposal {proposal.proposal_id}", border_style="white"))
     console.print(facts)
     if proposal.thesis:
-        console.print(Panel(Text(proposal.thesis), title="Thesis (written by Claude)",
+        author = llm.name if llm is not None else "a model"
+        console.print(Panel(Text(proposal.thesis), title=f"Thesis (written by {author})",
                             border_style="blue"))
     else:
         console.print("[yellow]No thesis: no LLM client configured or the call failed. "
@@ -400,7 +401,7 @@ def build_llm(no_llm: bool) -> Any | None:
                       "GEMINI_API_KEY). Proceeding without one: no thesis, and the critic "
                       "fails closed.[/yellow]")
         return None
-    console.print(f"[dim]LLM provider: {type(client).__name__} ({client.model})[/dim]")
+    console.print(f"[dim]LLM provider: {client.name} ({client.model})[/dim]")
     return client
 
 
@@ -495,7 +496,7 @@ def main() -> int:
                           f"'No trade' is a correct outcome.[/dim]")
             continue
 
-        render_proposal(proposal)
+        render_proposal(proposal, llm)
         audit.record("PROPOSED", {
             "proposal_id": proposal.proposal_id,
             "proposal_hash": proposal.content_hash(),

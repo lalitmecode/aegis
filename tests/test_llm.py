@@ -345,3 +345,46 @@ def test_anthropic_constructs_against_the_real_sdk():
     client = AnthropicClient("fake-key-not-used")
     assert callable(client._sdk.messages.create)
     assert client.model == "claude-sonnet-4-6"
+
+
+# --------------------------------------------------------------------------
+# display names
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "model, expected",
+    [
+        ("gemini-3.6-flash", "Gemini 3.6 Flash"),
+        ("gemini-4.0-pro", "Gemini 4.0 Pro"),
+        ("claude-sonnet-4-6", "Claude Sonnet 4.6"),   # dashed version -> dotted
+        ("claude-haiku-4-5", "Claude Haiku 4.5"),
+        ("claude-opus-5", "Claude Opus 5"),
+        ("gemini-3.6-flash-preview", "Gemini 3.6 Flash Preview"),
+    ],
+)
+def test_display_names_come_from_the_model_id(model, expected):
+    from aegis.agents.llm import _display_name
+
+    assert _display_name(model) == expected
+
+
+def test_each_backend_reports_a_name():
+    assert GeminiClient(sdk=StubGeminiSDK()).name == "Gemini 3.6 Flash"
+    assert AnthropicClient(sdk=StubAnthropicSDK()).name == "Claude Sonnet 4.6"
+    assert NullClient().name == "no model"
+
+
+def test_the_name_follows_an_overridden_model():
+    """A hardcoded label would go stale the moment the model is overridden."""
+    client = build_llm_client(
+        {"GEMINI_API_KEY": "g", "GEMINI_MODEL": "gemini-4.0-pro"}, sdk=StubGeminiSDK()
+    )
+    assert client.name == "Gemini 4.0 Pro"
+
+
+def test_an_unrecognised_model_id_still_yields_something_printable():
+    from aegis.agents.llm import _display_name
+
+    assert _display_name("some-future-model") == "Some Future Model"
+    assert _display_name("mystery") == "Mystery"

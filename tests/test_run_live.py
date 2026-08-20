@@ -242,3 +242,90 @@ def test_an_unnamed_library_warning_still_surfaces():
     assert logging.getLogger().level == logging.WARNING
     unnamed = logging.getLogger("alpaca.some_module")  # inherits from root
     assert unnamed.getEffectiveLevel() == logging.WARNING
+
+
+# --------------------------------------------------------------------------
+# the thesis panel names whoever wrote it
+# --------------------------------------------------------------------------
+
+
+def _proposal_with_thesis(thesis="Sells premium below support."):
+    from dataclasses import replace as _replace
+
+    from aegis.agents.research import ResearchAgent
+
+    from tests.test_agents import PUT_LADDER, StubFetcher, chain_from
+
+    state = run_live.PortfolioState(
+        equity=Decimal("100000"),
+        buying_power=Decimal("400000"),
+        open_positions=0,
+        positions_by_symbol={},
+        portfolio_delta=0.0,
+        capital_at_risk_pct=0.0,
+        fetched_at=run_live.datetime.now(run_live.timezone.utc),
+    )
+    proposal = ResearchAgent(
+        MANDATE, StubFetcher(chain_from(PUT_LADDER)), None, today=lambda: run_live.date.today()
+    ).propose("SPY", state)
+    return _replace(proposal, thesis=thesis)
+
+
+class NamedLLM:
+    def __init__(self, name):
+        self._name = name
+
+    @property
+    def name(self):
+        return self._name
+
+    @property
+    def model(self):
+        return "stub"
+
+    def complete(self, system, user, *, json_mode=False):
+        return None
+
+
+def test_the_thesis_panel_names_the_configured_provider(capsys):
+    """The title used to say 'Claude' regardless of what actually ran."""
+    run_live.render_proposal(_proposal_with_thesis(), NamedLLM("Gemini 3.6 Flash"))
+    out = capsys.readouterr().out
+    assert "written by Gemini 3.6 Flash" in out
+    assert "written by Claude" not in out
+
+
+def test_the_title_follows_a_different_provider(capsys):
+    run_live.render_proposal(_proposal_with_thesis(), NamedLLM("Claude Sonnet 4.6"))
+    out = capsys.readouterr().out
+    assert "written by Claude Sonnet 4.6" in out
+    assert "Gemini" not in out
+
+
+def test_no_provider_still_renders_without_claiming_an_author(capsys):
+    run_live.render_proposal(_proposal_with_thesis(), None)
+    out = capsys.readouterr().out
+    assert "written by a model" in out
+    assert "Claude" not in out and "Gemini" not in out
+
+
+def test_a_thesisless_proposal_shows_the_degraded_notice(capsys):
+    run_live.render_proposal(_proposal_with_thesis(thesis=None), NamedLLM("Gemini 3.6 Flash"))
+    out = capsys.readouterr().out
+    assert "No thesis" in out
+    assert "written by" not in out
+
+
+def test_the_panel_cannot_be_rendered_without_naming_a_provider():
+    """`llm` is required, so dropping it at a call site fails loudly."""
+    import inspect
+
+    parameter = inspect.signature(run_live.render_proposal).parameters["llm"]
+    assert parameter.default is inspect.Parameter.empty
+
+
+def test_main_hands_the_provider_to_the_thesis_panel():
+    """The title is only truthful if main() actually passes the client through."""
+    import inspect
+
+    assert "render_proposal(proposal, llm)" in inspect.getsource(run_live.main)
