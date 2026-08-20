@@ -47,6 +47,13 @@ concerns is not an endorsement -- separate deterministic checks decide whether \
 the trade is permitted, and they run whatever you say. Do not comment on whether \
 the trade should proceed.
 
+Every figure below was read from the live option chain when the proposal was \
+built, not estimated. An observation verifier independently re-checks each leg's \
+delta and open interest against live chain data immediately before execution and \
+refuses the trade on any mismatch or on open interest under the mandate floor, so \
+the numbers reaching you have a downstream check behind them. Do not raise \
+concerns that an input is missing or unverifiable when it is shown below.
+
 Report only concerns you can support from the mandate and the figures given. Do \
 not invent numbers, and do not manufacture an objection when you have none.
 
@@ -128,7 +135,8 @@ class CriticAgent:
     def _prompt(self, proposal, mandate: Mapping[str, Any] | str) -> str:
         legs = "\n".join(
             f"  {leg.side.value if hasattr(leg.side, 'value') else leg.side} "
-            f"{leg.symbol} (delta {leg.delta})"
+            f"{leg.symbol} (delta {leg.delta}, "
+            f"open interest {leg.open_interest if leg.open_interest is not None else 'unknown'})"
             for leg in proposal.legs
         )
         return (

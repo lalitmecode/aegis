@@ -44,6 +44,11 @@ class OrderLeg:
     #: field: the risk guard reads it, so it must not be changeable after
     #: approval without voiding the token.
     delta: Decimal | None = None
+    #: Open interest observed alongside the delta. The verifier checks live
+    #: open interest against the mandate floor at execution time; carrying the
+    #: observed figure here lets the critic and the operator see the liquidity
+    #: they are being asked to approve.
+    open_interest: int | None = None
 
     def canonical(self) -> dict[str, Any]:
         return {
@@ -52,6 +57,7 @@ class OrderLeg:
             "position_intent": _enum_value(self.position_intent),
             "ratio_qty": int(self.ratio_qty),
             "delta": None if self.delta is None else _number(self.delta),
+            "open_interest": self.open_interest,
         }
 
     @property

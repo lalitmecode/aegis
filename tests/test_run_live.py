@@ -180,3 +180,65 @@ def test_a_row_is_marked_failed_exactly_when_the_guard_cites_it(capsys):
     # The cited clause is marked failed; an uncited one is not.
     assert "✗" in out and "✓" in out
     assert "REFUSED" in out
+
+
+# --------------------------------------------------------------------------
+# console noise
+# --------------------------------------------------------------------------
+
+
+def test_logging_keeps_aegis_at_info_and_silences_the_noisy_libraries():
+    import logging
+
+    run_live._configure_logging()
+
+    assert logging.getLogger("aegis").level == logging.INFO
+    for name in run_live.NOISY_LOGGERS:
+        assert logging.getLogger(name).level == logging.ERROR, name
+
+
+def test_an_aegis_info_line_is_emitted_but_a_library_one_is_not():
+    """Root sits at WARNING; aegis records must still reach a handler.
+
+    Uses its own handler rather than caplog: _configure_logging passes
+    force=True, which removes existing root handlers -- caplog's included.
+    """
+    import logging
+
+    run_live._configure_logging()
+
+    emitted: list[str] = []
+
+    class Capture(logging.Handler):
+        def emit(self, record):
+            emitted.append(record.getMessage())
+
+    handler = Capture()
+    logging.getLogger().addHandler(handler)
+    try:
+        logging.getLogger("aegis.agents.research").info("no trade for SPY: reason")
+        logging.getLogger("google_genai.models").info("AFC is enabled")
+        logging.getLogger("httpx").warning("HTTP Request: POST ... 200 OK")
+        logging.getLogger("urllib3.connectionpool").warning("connection pool is full")
+    finally:
+        logging.getLogger().removeHandler(handler)
+
+    assert "no trade for SPY: reason" in emitted
+    assert not any("AFC is enabled" in m for m in emitted)
+    assert not any("HTTP Request" in m for m in emitted)
+    assert not any("connection pool" in m for m in emitted)
+
+
+def test_an_unnamed_library_warning_still_surfaces():
+    """Silence is the wrong default: a warning we did not anticipate gets through.
+
+    Asserted on the configured levels rather than through caplog, which sets
+    the root level itself and would mask the very thing under test.
+    """
+    import logging
+
+    run_live._configure_logging()
+
+    assert logging.getLogger().level == logging.WARNING
+    unnamed = logging.getLogger("alpaca.some_module")  # inherits from root
+    assert unnamed.getEffectiveLevel() == logging.WARNING

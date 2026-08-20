@@ -52,6 +52,12 @@ MANDATE_PATH = Path(__file__).parent / "config" / "mandate.yaml"
 AUDIT_DIR = Path(__file__).parent / "logs"
 REQUIRED_OPTIONS_LEVEL = 3
 
+#: Third-party loggers that chatter through a normal run -- request traces,
+#: connection pool churn, SDK notices. Silenced to ERROR so the console shows
+#: Aegis's own decisions and nothing else. `google_genai` uses an underscore,
+#: not `google.genai`, and the name covers its children by hierarchy.
+NOISY_LOGGERS = ("google_genai", "httpx", "urllib3")
+
 console = Console()
 
 
@@ -172,6 +178,7 @@ def render_proposal(proposal) -> None:
     legs.add_column("contract")
     legs.add_column("strike", justify="right")
     legs.add_column("delta", justify="right")
+    legs.add_column("open int.", justify="right")
     for leg in proposal.legs:
         parsed = parse_occ_symbol(leg.symbol)
         legs.add_row(
@@ -179,6 +186,7 @@ def render_proposal(proposal) -> None:
             leg.symbol,
             f"{parsed.strike:,.0f}",
             f"{leg.delta}",
+            f"{leg.open_interest:,}" if leg.open_interest is not None else "—",
         )
 
     facts = Table.grid(padding=(0, 2))
@@ -396,6 +404,24 @@ def build_llm(no_llm: bool) -> Any | None:
     return client
 
 
+def _configure_logging() -> None:
+    """Aegis at INFO, the noisy third parties off, everything else at WARNING.
+
+    Root stays at WARNING rather than ERROR so a genuine warning from a library
+    we have not named still reaches the operator -- silence is the wrong
+    default for a system whose whole job is surfacing refusals.
+    """
+    logging.basicConfig(
+        level=logging.WARNING,
+        format="%(message)s",
+        handlers=[RichHandler(console=console, show_path=False, show_time=False)],
+        force=True,  # basicConfig is a no-op if root already has handlers
+    )
+    logging.getLogger("aegis").setLevel(logging.INFO)
+    for name in NOISY_LOGGERS:
+        logging.getLogger(name).setLevel(logging.ERROR)
+
+
 def preflight(mandate) -> None:
     if os.environ.get("ALPACA_PAPER_TRADE", "true").strip().lower() == "false":
         console.print("[bold red]ALPACA_PAPER_TRADE is false. This script only runs against "
@@ -413,12 +439,7 @@ def main() -> int:
     parser.add_argument("--no-llm", action="store_true", help="skip Claude entirely")
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(message)s",
-        handlers=[RichHandler(console=console, show_path=False, show_time=False)],
-    )
-    logging.getLogger("aegis").setLevel(logging.INFO)
+    _configure_logging()
 
     mandate = yaml.safe_load(MANDATE_PATH.read_text())
     preflight(mandate)

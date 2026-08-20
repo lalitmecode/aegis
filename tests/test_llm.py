@@ -18,6 +18,13 @@ from aegis.agents.llm import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _clean_model_env(monkeypatch):
+    """Model overrides must not leak in from the developer's shell."""
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+
+
 def rate_limited() -> Exception:
     return genai_errors.ClientError(429, {"error": {"message": "quota exceeded"}})
 
@@ -83,7 +90,7 @@ def test_anthropic_key_selects_anthropic():
 def test_gemini_key_selects_gemini():
     client = build_llm_client({"GEMINI_API_KEY": "g-test"}, sdk=StubGeminiSDK())
     assert isinstance(client, GeminiClient)
-    assert client.model == "gemini-2.5-flash"
+    assert client.model == "gemini-3.6-flash"
 
 
 def test_anthropic_wins_when_both_are_set():
@@ -118,6 +125,62 @@ def test_null_client_returns_none():
 
 
 # --------------------------------------------------------------------------
+# model ids are configuration, not code
+# --------------------------------------------------------------------------
+
+
+def test_the_gemini_default_is_a_model_google_still_serves():
+    """gemini-2.5-flash 404s on newly issued keys; Google points at 3.6."""
+    from aegis.agents.llm import DEFAULT_GEMINI_MODEL
+
+    assert DEFAULT_GEMINI_MODEL == "gemini-3.6-flash"
+    assert GeminiClient(sdk=StubGeminiSDK()).model == "gemini-3.6-flash"
+
+
+def test_gemini_model_is_overridable_from_the_environment():
+    client = build_llm_client(
+        {"GEMINI_API_KEY": "g", "GEMINI_MODEL": "gemini-4.0-pro"}, sdk=StubGeminiSDK()
+    )
+    assert client.model == "gemini-4.0-pro"
+
+
+def test_anthropic_model_is_overridable_from_the_environment():
+    client = build_llm_client(
+        {"ANTHROPIC_API_KEY": "k", "ANTHROPIC_MODEL": "claude-opus-5"}, sdk=StubAnthropicSDK()
+    )
+    assert client.model == "claude-opus-5"
+
+
+def test_an_explicit_model_beats_the_environment():
+    client = build_llm_client(
+        {"GEMINI_API_KEY": "g", "GEMINI_MODEL": "from-env"},
+        sdk=StubGeminiSDK(),
+        model="explicit",
+    )
+    assert client.model == "explicit"
+
+
+def test_an_explicit_model_beats_the_process_environment(monkeypatch):
+    """Precedence is explicit > environment > default, on both construction paths."""
+    monkeypatch.setenv("GEMINI_MODEL", "from-env")
+    monkeypatch.setenv("ANTHROPIC_MODEL", "from-env")
+    assert GeminiClient(sdk=StubGeminiSDK(), model="explicit").model == "explicit"
+    assert AnthropicClient(sdk=StubAnthropicSDK(), model="explicit").model == "explicit"
+
+
+def test_the_process_environment_is_honoured_on_direct_construction(monkeypatch):
+    """A deprecation should be fixable without going through build_llm_client."""
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-4.0-flash")
+    assert GeminiClient(sdk=StubGeminiSDK()).model == "gemini-4.0-flash"
+
+
+def test_the_overridden_model_is_what_reaches_the_api():
+    sdk = StubGeminiSDK()
+    GeminiClient(sdk=sdk, model="gemini-4.0-pro", sleeper=lambda _s: None).complete("sys", "user")
+    assert sdk.calls[0]["model"] == "gemini-4.0-pro"
+
+
+# --------------------------------------------------------------------------
 # gemini
 # --------------------------------------------------------------------------
 
@@ -145,7 +208,7 @@ def test_gemini_passes_the_system_instruction_separately():
     call = sdk.calls[0]
     assert call["config"].system_instruction == "you are the critic"
     assert call["contents"] == "review this"
-    assert call["model"] == "gemini-2.5-flash"
+    assert call["model"] == "gemini-3.6-flash"
 
 
 def test_gemini_json_output_parses():
@@ -274,7 +337,7 @@ def test_gemini_constructs_against_the_real_sdk():
     """Stubs never exercise the constructor, so a wrong signature would hide here."""
     client = GeminiClient("fake-key-not-used")
     assert callable(client._sdk.models.generate_content)
-    assert client.model == "gemini-2.5-flash"
+    assert client.model == "gemini-3.6-flash"
 
 
 def test_anthropic_constructs_against_the_real_sdk():

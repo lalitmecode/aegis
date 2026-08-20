@@ -7,7 +7,7 @@ PyYAML>=6.0.3            # parses config/mandate.yaml
 # LLM providers. Either one satisfies aegis/agents/llm.py, which picks a
 # backend from the environment; with neither key set the agents degrade and
 # the trade is unaffected.
-google-genai>=2.18.1     # GEMINI_API_KEY -> GeminiClient (gemini-2.5-flash)
+google-genai>=2.18.1     # GEMINI_API_KEY -> GeminiClient (gemini-3.6-flash)
 # anthropic>=0.122.0     # ANTHROPIC_API_KEY -> AnthropicClient; imported lazily,
                          # so uncomment only if you use this backend
 

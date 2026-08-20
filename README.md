@@ -141,8 +141,10 @@ audit chain is an injected interface.
 
 The language model is a configuration choice, not a dependency. `aegis/agents/llm.py` defines a
 one-method `LLMClient` protocol — `complete(system, user)` — with backends for Gemini
-(`gemini-2.5-flash`, the default when `GEMINI_API_KEY` is set) and Claude (`ANTHROPIC_API_KEY`,
-which takes precedence). Set neither and the agents run without a model: proposals carry no
+(`gemini-3.6-flash`, the default when `GEMINI_API_KEY` is set) and Claude (`ANTHROPIC_API_KEY`,
+which takes precedence). Model ids are the part that rots — providers deprecate on their own
+schedule — so both read from the environment (`GEMINI_MODEL`, `ANTHROPIC_MODEL`) and a successor
+model is a config change rather than an edit. Set neither and the agents run without a model: proposals carry no
 thesis, the critic fails closed, and the trade is byte-identical. Keeping the protocol to one
 method is what makes that swap cheap — and it also means nothing an agent cannot express through
 `complete()` can be delegated to a model.

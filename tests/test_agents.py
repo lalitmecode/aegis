@@ -564,3 +564,59 @@ def test_the_chosen_spread_still_passes_the_real_risk_guard(mandate, state):
     guard = RiskGuard(mandate, session=FakeSession(), clock=lambda: NOW)
     decision = guard.evaluate(proposal, state)
     assert decision.approved, decision.reasons
+
+
+# --------------------------------------------------------------------------
+# the critic can only judge what it is shown
+# --------------------------------------------------------------------------
+
+
+def test_open_interest_reaches_the_critic_prompt(mandate, proposal):
+    """The critic kept flagging missing OI because the payload genuinely lacked it."""
+    llm = StubLLM(text='{"concerns": [], "clause_refs": []}')
+    CriticAgent(llm).review(proposal, mandate)
+
+    prompt = llm.calls[0]["user"]
+    assert "open interest" in prompt
+    for leg in proposal.legs:
+        assert str(leg.open_interest) in prompt
+
+
+def test_legs_carry_the_open_interest_observed_on_the_chain(mandate, state):
+    proposal = build_agent(mandate).propose("SPY", state)
+    # The fixture ladder lists 4,000 contracts at every strike.
+    assert [leg.open_interest for leg in proposal.legs] == [4000, 4000]
+
+
+def test_open_interest_is_hashed_like_every_other_field(mandate, state):
+    """An unhashed figure would be a channel for editing a proposal post-approval."""
+    proposal = build_agent(mandate).propose("SPY", state)
+    restated = replace(
+        proposal,
+        legs=(replace(proposal.legs[0], open_interest=999_999), proposal.legs[1]),
+    )
+    assert restated.content_hash() != proposal.content_hash()
+
+
+def test_the_critic_is_told_the_figures_are_independently_rechecked(mandate, proposal):
+    """Otherwise it objects to inputs it cannot itself confirm."""
+    llm = StubLLM(text='{"concerns": [], "clause_refs": []}')
+    CriticAgent(llm).review(proposal, mandate)
+
+    system = llm.calls[0]["system"]
+    assert "observation verifier independently re-checks" in system
+    assert "open interest" in system
+    assert "Do not raise concerns that an input is missing or unverifiable" in system
+
+
+def test_an_absent_open_interest_reads_as_unknown_not_none(mandate, proposal):
+    """`None` in a prompt invites the model to treat it as a data-quality defect."""
+    blind = replace(
+        proposal, legs=(replace(proposal.legs[0], open_interest=None), proposal.legs[1])
+    )
+    llm = StubLLM(text='{"concerns": [], "clause_refs": []}')
+    CriticAgent(llm).review(blind, mandate)
+
+    prompt = llm.calls[0]["user"]
+    assert "open interest unknown" in prompt
+    assert "open interest None" not in prompt

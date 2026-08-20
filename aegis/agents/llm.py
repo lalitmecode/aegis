@@ -10,8 +10,13 @@ Backends:
 
 * :class:`AnthropicClient` -- the Anthropic SDK.
 * :class:`GeminiClient` -- the ``google-genai`` SDK, defaulting to
-  ``gemini-2.5-flash``. When the caller asks for JSON it uses the model's
+  ``gemini-3.6-flash``. When the caller asks for JSON it uses the model's
   native JSON mode rather than hoping the prose parses.
+
+Model ids are the part of this that rots: providers deprecate them on their own
+schedule, and a 404 mid-demo is not the moment to edit source. Both backends
+read their model from the environment (``GEMINI_MODEL``, ``ANTHROPIC_MODEL``),
+so moving to a successor model is a config change.
 * :class:`NullClient` -- returns None, which every caller already treats as
   "no model available" and degrades around.
 
@@ -28,6 +33,11 @@ from time import sleep as _sleep
 from typing import Any, Callable, Mapping, Protocol, runtime_checkable
 
 log = logging.getLogger(__name__)
+
+#: Model ids, overridable per the note above. ``gemini-2.5-flash`` is gone:
+#: Google returns 404 for it on newly issued API keys and points at 3.6.
+DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
+DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
 
 DEFAULT_MAX_ATTEMPTS = 4
 #: First backoff step. Doubles per attempt: 4s, 8s, 16s covers a 10 RPM window.
@@ -56,6 +66,11 @@ class LLMClient(Protocol):
 # --------------------------------------------------------------------------
 # retry
 # --------------------------------------------------------------------------
+
+
+def _model_from_env(variable: str, default: str) -> str:
+    """Resolve a model id from the process environment, falling back to ours."""
+    return os.environ.get(variable) or default
 
 
 def _retry_after(exc: BaseException) -> float | None:
@@ -129,20 +144,22 @@ class _Backend:
 class AnthropicClient(_Backend):
     """The Anthropic SDK behind the shared protocol."""
 
-    DEFAULT_MODEL = "claude-sonnet-4-6"
+    #: Env var that overrides the model id.
+    MODEL_ENV = "ANTHROPIC_MODEL"
+    DEFAULT_MODEL = DEFAULT_ANTHROPIC_MODEL
 
     def __init__(
         self,
         api_key: str | None = None,
         *,
-        model: str = DEFAULT_MODEL,
+        model: str | None = None,
         max_tokens: int = 4096,
         thinking: bool = False,
         sdk: Any | None = None,
         **retry: Any,
     ) -> None:
         super().__init__(**retry)
-        self._model = model
+        self._model = model or _model_from_env(self.MODEL_ENV, DEFAULT_ANTHROPIC_MODEL)
         self._max_tokens = max_tokens
         self._thinking = thinking
         if sdk is not None:
@@ -194,19 +211,21 @@ def _anthropic_text(response: Any) -> str | None:
 class GeminiClient(_Backend):
     """The google-genai SDK behind the shared protocol."""
 
-    DEFAULT_MODEL = "gemini-2.5-flash"
+    #: Env var that overrides the model id.
+    MODEL_ENV = "GEMINI_MODEL"
+    DEFAULT_MODEL = DEFAULT_GEMINI_MODEL
 
     def __init__(
         self,
         api_key: str | None = None,
         *,
-        model: str = DEFAULT_MODEL,
+        model: str | None = None,
         max_output_tokens: int | None = None,
         sdk: Any | None = None,
         **retry: Any,
     ) -> None:
         super().__init__(**retry)
-        self._model = model
+        self._model = model or _model_from_env(self.MODEL_ENV, DEFAULT_GEMINI_MODEL)
         self._max_output_tokens = max_output_tokens
         if sdk is not None:
             self._sdk = sdk
@@ -266,13 +285,18 @@ def build_llm_client(env: Mapping[str, str] | None = None, **kwargs: Any) -> LLM
     ``ANTHROPIC_API_KEY`` wins, then ``GEMINI_API_KEY``. With neither set this
     returns None -- the agents degrade rather than fail, so a missing key costs
     the written explanation and never the trade.
+
+    ``GEMINI_MODEL`` / ``ANTHROPIC_MODEL`` in ``env`` override the default model
+    id; an explicit ``model=`` keyword still wins over both.
     """
     global _no_provider_logged
     env = os.environ if env is None else env
 
     if env.get("ANTHROPIC_API_KEY"):
+        kwargs.setdefault("model", env.get(AnthropicClient.MODEL_ENV))
         return AnthropicClient(env["ANTHROPIC_API_KEY"], **kwargs)
     if env.get("GEMINI_API_KEY"):
+        kwargs.setdefault("model", env.get(GeminiClient.MODEL_ENV))
         return GeminiClient(env["GEMINI_API_KEY"], **kwargs)
 
     if not _no_provider_logged:
