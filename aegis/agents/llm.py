@@ -20,9 +20,11 @@ so moving to a successor model is a config change.
 * :class:`NullClient` -- returns None, which every caller already treats as
   "no model available" and degrades around.
 
-:func:`build_llm_client` picks one from the environment. All backends retry
-rate limits with exponential backoff: Gemini's free tier allows 10 requests per
-minute, and a run across the mandate's eight symbols bursts past that.
+:func:`build_llm_client` picks one from the environment. All backends retry transient
+failures with exponential backoff -- 429 rate limits (Gemini's free tier allows
+10 requests per minute, and a run across the mandate's eight symbols bursts past
+that) and 5xx server errors, which the provider itself describes as temporary.
+A 4xx that is not 429 is a decision, not a blip, and propagates immediately.
 """
 
 from __future__ import annotations
@@ -114,10 +116,24 @@ def _retry_after(exc: BaseException) -> float | None:
         return None
 
 
+def _status_of(exc: BaseException) -> int | None:
+    """HTTP status carried by a provider exception, if any."""
+    for attribute in ("code", "status_code"):
+        value = getattr(exc, attribute, None)
+        if isinstance(value, int):
+            return value
+    return None
+
+
+def _is_transient_status(status: int | None) -> bool:
+    """429 is a rate limit; 5xx is the provider having a bad moment."""
+    return status is not None and (status == 429 or 500 <= status < 600)
+
+
 def _with_retries(
     call: Callable[[], Any],
     *,
-    is_rate_limited: Callable[[BaseException], bool],
+    is_retryable: Callable[[BaseException], bool],
     provider: str,
     max_attempts: int,
     backoff_seconds: float,
@@ -129,12 +145,12 @@ def _with_retries(
         try:
             return call()
         except Exception as exc:
-            if attempt == max_attempts or not is_rate_limited(exc):
+            if attempt == max_attempts or not is_retryable(exc):
                 raise
             wait = _retry_after(exc) or delay
             log.warning(
-                "%s rate limited (attempt %d/%d); retrying in %.0fs",
-                provider, attempt, max_attempts, wait,
+                "%s call failed with %s (attempt %d/%d); retrying in %.0fs",
+                provider, _status_of(exc) or type(exc).__name__, attempt, max_attempts, wait,
             )
             sleeper(wait)
             delay *= 2
@@ -155,10 +171,10 @@ class _Backend:
         self._backoff = float(backoff_seconds)
         self._sleeper = sleeper or _sleep
 
-    def _call(self, fn, *, is_rate_limited, provider):
+    def _call(self, fn, *, is_retryable, provider):
         return _with_retries(
             fn,
-            is_rate_limited=is_rate_limited,
+            is_retryable=is_retryable,
             provider=provider,
             max_attempts=self._max_attempts,
             backoff_seconds=self._backoff,
@@ -213,7 +229,7 @@ class AnthropicClient(_Backend):
 
         response = self._call(
             lambda: self._sdk.messages.create(**request),
-            is_rate_limited=_anthropic_rate_limited,
+            is_retryable=_anthropic_retryable,
             provider="anthropic",
         )
         return _anthropic_text(response)
@@ -227,10 +243,10 @@ class AnthropicClient(_Backend):
         return _display_name(self._model)
 
 
-def _anthropic_rate_limited(exc: BaseException) -> bool:
-    if getattr(exc, "status_code", None) == 429:
+def _anthropic_retryable(exc: BaseException) -> bool:
+    if _is_transient_status(_status_of(exc)):
         return True
-    return type(exc).__name__ == "RateLimitError"
+    return type(exc).__name__ in {"RateLimitError", "InternalServerError", "APIConnectionError"}
 
 
 def _anthropic_text(response: Any) -> str | None:
@@ -282,7 +298,7 @@ class GeminiClient(_Backend):
             lambda: self._sdk.models.generate_content(
                 model=self._model, contents=user, config=config
             ),
-            is_rate_limited=_gemini_rate_limited,
+            is_retryable=_gemini_retryable,
             provider="gemini",
         )
         text = getattr(response, "text", None)
@@ -297,8 +313,11 @@ class GeminiClient(_Backend):
         return _display_name(self._model)
 
 
-def _gemini_rate_limited(exc: BaseException) -> bool:
-    return getattr(exc, "code", None) == 429 or getattr(exc, "status", None) == "RESOURCE_EXHAUSTED"
+def _gemini_retryable(exc: BaseException) -> bool:
+    if _is_transient_status(_status_of(exc)):
+        return True
+    # google-genai spells the reason as well as the code.
+    return getattr(exc, "status", None) in {"RESOURCE_EXHAUSTED", "UNAVAILABLE"}
 
 
 class NullClient:

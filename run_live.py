@@ -205,8 +205,8 @@ def render_proposal(proposal, llm) -> None:
         console.print(Panel(Text(proposal.thesis), title=f"Thesis (written by {author})",
                             border_style="blue"))
     else:
-        console.print("[yellow]No thesis: no LLM client configured or the call failed. "
-                      "The trade is unaffected.[/yellow]")
+        reason = "no LLM provider configured" if llm is None else "the model call failed"
+        console.print(f"[yellow]No thesis: {reason}. The trade is unaffected.[/yellow]")
 
 
 def render_critique(critique) -> None:
@@ -423,6 +423,21 @@ def _configure_logging() -> None:
         logging.getLogger(name).setLevel(logging.ERROR)
 
 
+def _load_env() -> None:
+    """Load .env before anything reads it.
+
+    preflight() gates on ALPACA_PAPER_TRADE, and Clients.from_env() is what
+    normally loads the file -- but that runs *after* preflight. Without this,
+    ALPACA_PAPER_TRADE=false in .env sails straight past the live-trading
+    guard, because os.environ has not seen it yet.
+    """
+    env_file = Path(__file__).parent / ".env"
+    if env_file.exists():
+        from dotenv import load_dotenv
+
+        load_dotenv(env_file)
+
+
 def preflight(mandate) -> None:
     if os.environ.get("ALPACA_PAPER_TRADE", "true").strip().lower() == "false":
         console.print("[bold red]ALPACA_PAPER_TRADE is false. This script only runs against "
@@ -442,6 +457,7 @@ def main() -> int:
 
     _configure_logging()
 
+    _load_env()
     mandate = yaml.safe_load(MANDATE_PATH.read_text())
     preflight(mandate)
 

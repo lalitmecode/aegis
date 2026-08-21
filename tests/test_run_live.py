@@ -329,3 +329,45 @@ def test_main_hands_the_provider_to_the_thesis_panel():
     import inspect
 
     assert "render_proposal(proposal, llm)" in inspect.getsource(run_live.main)
+
+
+# --------------------------------------------------------------------------
+# the live-trading guard has to be able to see the setting
+# --------------------------------------------------------------------------
+
+
+def test_preflight_refuses_live_trading(monkeypatch):
+    monkeypatch.setenv("ALPACA_PAPER_TRADE", "false")
+    with pytest.raises(SystemExit):
+        run_live.preflight(MANDATE)
+
+
+def test_preflight_refuses_a_non_paper_mandate(monkeypatch):
+    monkeypatch.setenv("ALPACA_PAPER_TRADE", "true")
+    live = dict(MANDATE)
+    live["mandate"] = {**MANDATE["mandate"], "account_type": "live"}
+    with pytest.raises(SystemExit):
+        run_live.preflight(live)
+
+
+def test_env_is_loaded_before_preflight_reads_it():
+    """Clients.from_env() loads .env, but it runs after preflight -- too late."""
+    import inspect
+
+    source = inspect.getsource(run_live.main)
+    assert source.index("_load_env()") < source.index("preflight(mandate)")
+
+
+def test_the_degraded_notice_names_the_actual_reason(capsys):
+    """It used to say 'no LLM client configured' even when one was and the call failed."""
+    run_live.render_proposal(_proposal_with_thesis(thesis=None), NamedLLM("Gemini 3.6 Flash"))
+    out = capsys.readouterr().out
+    assert "the model call failed" in out
+    assert "no LLM provider configured" not in out
+
+
+def test_the_degraded_notice_distinguishes_an_absent_provider(capsys):
+    run_live.render_proposal(_proposal_with_thesis(thesis=None), None)
+    out = capsys.readouterr().out
+    assert "no LLM provider configured" in out
+    assert "the model call failed" not in out

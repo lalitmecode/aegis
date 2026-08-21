@@ -35,7 +35,21 @@ log = logging.getLogger(__name__)
 
 CONTRACT_MULTIPLIER = Decimal(100)
 DEFAULT_TARGET_DTE = 30
-DEFAULT_MONEYNESS = 0.05
+
+#: Strike band, in standard deviations of the underlying's own implied move
+#: over the holding period.
+#:
+#: A fixed percentage band does not survive contact with a mixed universe. At
+#: +/-5%, SPY's 0.30-delta put is inside the window and NVDA's is not, so half
+#: the mandate's universe was invisible to this agent -- it reported "no strike
+#: pair satisfies the delta ceiling" for strikes it had never fetched. Scaling
+#: the band by implied volatility makes the window mean the same thing on every
+#: underlying: the 0.30-delta strike sits around 0.5 sigma out, so 2 sigma
+#: covers both legs with room to spare.
+BAND_SIGMAS = 2.0
+MIN_MONEYNESS = 0.05
+MAX_MONEYNESS = 0.35
+TRADING_DAYS_PER_YEAR = Decimal(365)
 
 #: Candidate spread widths, in points of underlying price.
 #:
@@ -108,7 +122,7 @@ class ResearchAgent:
         contract_type: str = "put",
         widths: tuple[Decimal, ...] = DEFAULT_WIDTHS,
         target_dte: int = DEFAULT_TARGET_DTE,
-        moneyness: float = DEFAULT_MONEYNESS,
+        moneyness: float | None = None,
         today=None,
     ) -> None:
         self._mandate = mandate
@@ -117,6 +131,8 @@ class ResearchAgent:
         self._contract_type = contract_type
         self._widths = tuple(_dec(w) for w in widths)
         self._target_dte = target_dte
+        #: None means "size the band from implied volatility"; an explicit
+        #: value pins it and skips the probe.
         self._moneyness = moneyness
         self._today = today or date.today
 
@@ -142,14 +158,7 @@ class ResearchAgent:
         window = strategy.get("expiry_window_days") or {}
         expiry_window = (int(window.get("min", 7)), int(window.get("max", 45)))
         try:
-            chain = self._fetch(
-                underlying,
-                target_dte=self._target_dte,
-                moneyness=self._moneyness,
-                expiry_window=expiry_window,
-                contract_type=self._contract_type,
-                today=self._today(),
-            )
+            chain = self._chain_for(underlying, expiry_window)
         except LookupError as exc:
             return self._no_trade(underlying, f"no chain available: {exc}")
 
@@ -186,6 +195,69 @@ class ResearchAgent:
             proposal.max_loss_usd,
         )
         return proposal
+
+    def _chain_for(self, underlying: str, expiry_window: tuple[int, int]):
+        """Fetch the chain, widening the strike band to the underlying's own vol.
+
+        With an explicit moneyness this is a single fetch. Otherwise it probes
+        a narrow band, reads implied volatility off the result, and re-fetches
+        the same expiry over a band wide enough to contain the strikes the
+        mandate's delta ceiling actually points at.
+        """
+        today = self._today()
+        if self._moneyness is not None:
+            return self._fetch(
+                underlying,
+                target_dte=self._target_dte,
+                moneyness=self._moneyness,
+                expiry_window=expiry_window,
+                contract_type=self._contract_type,
+                today=today,
+            )
+
+        probe = self._fetch(
+            underlying,
+            target_dte=self._target_dte,
+            moneyness=MIN_MONEYNESS,
+            expiry_window=expiry_window,
+            contract_type=self._contract_type,
+            today=today,
+        )
+        band = self._implied_band(probe)
+        if band <= _dec(MIN_MONEYNESS):
+            return probe
+
+        log.info(
+            "%s: widening the strike band to %.1f%% (%.0f%% implied vol over %d days)",
+            underlying, float(band) * 100, float(self._atm_iv(probe) or 0) * 100, probe.dte,
+        )
+        # Pin the expiry the probe settled on; a wider band must not change it.
+        return self._fetch(
+            underlying,
+            target_dte=probe.dte,
+            moneyness=float(band),
+            expiry_window=(probe.dte, probe.dte),
+            contract_type=self._contract_type,
+            today=today,
+        )
+
+    @staticmethod
+    def _atm_iv(chain) -> Decimal | None:
+        """Implied volatility of the listed strike closest to spot."""
+        quoted = [c for c in chain.contracts if c.implied_volatility]
+        if not quoted or not chain.spot:
+            return None
+        nearest = min(quoted, key=lambda c: abs(_dec(c.strike) - _dec(chain.spot)))
+        return _dec(nearest.implied_volatility)
+
+    def _implied_band(self, chain) -> Decimal:
+        """Half-width of the strike band, as a fraction of spot."""
+        iv = self._atm_iv(chain)
+        if iv is None or chain.dte is None or chain.dte <= 0:
+            return _dec(MIN_MONEYNESS)
+        horizon = (_dec(chain.dte) / TRADING_DAYS_PER_YEAR).sqrt()
+        band = _dec(BAND_SIGMAS) * iv * horizon
+        return max(_dec(MIN_MONEYNESS), min(_dec(MAX_MONEYNESS), band))
 
     def _no_trade(self, underlying: str, reason: str) -> None:
         """Log why nothing was proposed and return None. Not an error path."""

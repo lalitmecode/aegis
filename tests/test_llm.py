@@ -388,3 +388,78 @@ def test_an_unrecognised_model_id_still_yields_something_printable():
 
     assert _display_name("some-future-model") == "Some Future Model"
     assert _display_name("mystery") == "Mystery"
+
+
+# --------------------------------------------------------------------------
+# 5xx is transient too -- a live run hit 503 UNAVAILABLE and did not retry
+# --------------------------------------------------------------------------
+
+
+def unavailable() -> Exception:
+    """The exact shape Gemini returned mid-demo."""
+    return genai_errors.ServerError(
+        503,
+        {"error": {"code": 503, "message": "This model is currently experiencing high "
+                                           "demand. Spikes in demand are usually temporary. "
+                                           "Please try again later.",
+                   "status": "UNAVAILABLE"}},
+    )
+
+
+def test_a_503_retries_then_succeeds():
+    sdk = StubGeminiSDK(text="recovered", errors=[unavailable(), unavailable()])
+    assert gemini(sdk).complete("sys", "user") == "recovered"
+    assert len(sdk.calls) == 3
+
+
+def test_a_500_retries():
+    sdk = StubGeminiSDK(text="recovered", errors=[genai_errors.ServerError(500, {})])
+    assert gemini(sdk).complete("sys", "user") == "recovered"
+    assert len(sdk.calls) == 2
+
+
+def test_anthropic_5xx_retries():
+    class Overloaded(Exception):
+        status_code = 529
+
+    sdk = StubAnthropicSDK(text="recovered", errors=[Overloaded()])
+    assert anthropic(sdk).complete("sys", "user") == "recovered"
+    assert len(sdk.calls) == 2
+
+
+def test_a_4xx_that_is_not_429_still_fails_immediately():
+    """A bad request is a decision; widening to 5xx must not swallow it."""
+    for status in (400, 401, 403, 404):
+        sdk = StubGeminiSDK(errors=[genai_errors.ClientError(status, {"error": {}})])
+        with pytest.raises(genai_errors.ClientError):
+            gemini(sdk).complete("sys", "user")
+        assert len(sdk.calls) == 1, f"{status} should not have been retried"
+
+
+def test_persistent_unavailability_still_reaches_the_agent():
+    """After the attempts are spent the error propagates, and the agent degrades."""
+    sdk = StubGeminiSDK(errors=[unavailable() for _ in range(10)])
+    with pytest.raises(genai_errors.ServerError):
+        gemini(sdk, max_attempts=2).complete("sys", "user")
+
+
+def test_a_status_string_is_honoured_when_no_code_is_present():
+    """google-genai spells the reason as well as the code; either signal suffices."""
+
+    class StatusOnly(Exception):
+        status = "UNAVAILABLE"
+
+    class ExhaustedOnly(Exception):
+        status = "RESOURCE_EXHAUSTED"
+
+    for error in (StatusOnly(), ExhaustedOnly()):
+        sdk = StubGeminiSDK(text="recovered", errors=[error])
+        assert gemini(sdk).complete("sys", "user") == "recovered"
+        assert len(sdk.calls) == 2
+
+
+def test_a_bare_exception_with_no_status_is_not_retried():
+    sdk = StubGeminiSDK(errors=[ValueError("something else entirely")])
+    with pytest.raises(ValueError):
+        gemini(sdk).complete("sys", "user")
+    assert len(sdk.calls) == 1

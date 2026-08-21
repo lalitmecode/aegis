@@ -42,7 +42,8 @@ def occ(strike: int) -> str:
     return f"SPY260918P{strike * 1000:08d}"
 
 
-def put(strike: int, delta: float, mid: float, open_interest: int = 4000) -> Contract:
+def put(strike: int, delta: float, mid: float, open_interest: int = 4000,
+        iv: float = 0.15) -> Contract:
     return Contract(
         symbol=occ(strike),
         type="put",
@@ -51,7 +52,7 @@ def put(strike: int, delta: float, mid: float, open_interest: int = 4000) -> Con
         bid=round(mid - 0.05, 2),
         ask=round(mid + 0.05, 2),
         delta=delta,
-        implied_volatility=0.15,
+        implied_volatility=iv,
         open_interest=open_interest,
     )
 
@@ -620,3 +621,114 @@ def test_an_absent_open_interest_reads_as_unknown_not_none(mandate, proposal):
     prompt = llm.calls[0]["user"]
     assert "open interest unknown" in prompt
     assert "open interest None" not in prompt
+
+
+# --------------------------------------------------------------------------
+# the strike band is sized by the underlying's own implied move
+# --------------------------------------------------------------------------
+
+
+#: Shaped like NVDA: nothing inside +/-5% clears the 0.30 delta ceiling.
+VOLATILE_SPOT = 215.0
+VOLATILE_LADDER = {
+    225: (-0.55, 12.00),
+    220: (-0.48, 9.50),
+    215: (-0.42, 7.50),
+    210: (-0.38, 6.00),
+    205: (-0.34, 5.00),   # <- edge of the +/-5% band; still over the ceiling
+    200: (-0.29, 4.00),   # <- the strike the mandate actually points at
+    195: (-0.24, 2.90),
+    190: (-0.20, 2.00),
+}
+
+
+class BandAwareFetcher:
+    """Returns only the strikes inside the requested band, as the real API does.
+
+    A stub that ignores `moneyness` cannot reproduce the bug this guards: the
+    agent reported "no strike pair satisfies the delta ceiling" for strikes it
+    had never fetched.
+    """
+
+    def __init__(self, ladder=None, spot=VOLATILE_SPOT, iv=0.45):
+        self.ladder = ladder or VOLATILE_LADDER
+        self.spot = spot
+        self.iv = iv
+        self.calls: list[dict] = []
+
+    def __call__(self, underlying, **kwargs):
+        self.calls.append(kwargs)
+        band = Decimal(str(kwargs["moneyness"]))
+        low = Decimal(str(self.spot)) * (1 - band)
+        high = Decimal(str(self.spot)) * (1 + band)
+        contracts = tuple(
+            put(strike, delta, mid, iv=self.iv)
+            for strike, (delta, mid) in self.ladder.items()
+            if low <= Decimal(strike) <= high
+        )
+        return Chain(
+            underlying=underlying, spot=self.spot, expiration=EXPIRY,
+            dte=30, contracts=contracts,
+        )
+
+
+def test_a_volatile_underlying_still_finds_its_compliant_strike(mandate, state):
+    """The live failure: NVDA's 0.30-delta put sits outside a +/-5% band."""
+    fetcher = BandAwareFetcher()
+    proposal = build_agent(mandate, fetcher).propose("NVDA", state)
+
+    assert proposal is not None, "the compliant strike is outside +/-5% and must still be found"
+    assert parse_occ(proposal.legs[0].symbol) == Decimal("200")
+    assert parse_occ(proposal.legs[1].symbol) == Decimal("195")
+
+
+def test_a_narrow_band_alone_finds_nothing(mandate, state):
+    """Pins the cause: with the band pinned at 5%, the same chain yields no trade."""
+    from aegis.agents.research import ResearchAgent
+
+    pinned = ResearchAgent(
+        mandate, BandAwareFetcher(), None, moneyness=0.05, today=lambda: TODAY
+    ).propose("NVDA", state)
+    assert pinned is None
+
+
+def test_the_band_widens_to_the_implied_move(mandate, state):
+    fetcher = BandAwareFetcher()
+    build_agent(mandate, fetcher).propose("NVDA", state)
+
+    assert len(fetcher.calls) == 2, "a probe, then a widened re-fetch"
+    assert fetcher.calls[0]["moneyness"] == 0.05
+    # 2 sigma of 45% vol over 30 days ~ 25.8%
+    assert 0.24 < fetcher.calls[1]["moneyness"] < 0.27
+
+
+def test_the_widened_fetch_pins_the_expiry_the_probe_chose(mandate, state):
+    """A wider band must not silently move the trade to a different expiry."""
+    fetcher = BandAwareFetcher()
+    build_agent(mandate, fetcher).propose("NVDA", state)
+    assert fetcher.calls[1]["expiry_window"] == (30, 30)
+
+
+def test_a_calm_underlying_needs_no_second_fetch(mandate, state):
+    fetcher = BandAwareFetcher(ladder=PUT_LADDER, spot=767.35, iv=0.05)
+    build_agent(mandate, fetcher).propose("SPY", state)
+    assert len(fetcher.calls) == 1, "2 sigma of 5% vol is inside the probe band"
+
+
+def test_an_explicit_moneyness_skips_the_probe(mandate, state):
+    from aegis.agents.research import ResearchAgent
+
+    fetcher = BandAwareFetcher()
+    ResearchAgent(mandate, fetcher, None, moneyness=0.30, today=lambda: TODAY).propose(
+        "NVDA", state
+    )
+    assert len(fetcher.calls) == 1
+    assert fetcher.calls[0]["moneyness"] == 0.30
+
+
+def test_the_band_is_clamped_for_an_extreme_vol_underlying(mandate, state):
+    from aegis.agents.research import MAX_MONEYNESS
+
+    fetcher = BandAwareFetcher(iv=2.0)  # 2 sigma would be ~115%
+    build_agent(mandate, fetcher).propose("NVDA", state)
+    assert fetcher.calls[1]["moneyness"] == MAX_MONEYNESS
