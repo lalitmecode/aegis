@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aegis · governance console</title>
+<style>
+:root {
+  color-scheme: light;
+  --plane:      #f9f9f7;
+  --surface:    #fcfcfb;
+  --ink:        #0b0b0b;
+  --ink-2:      #52514e;
+  --muted:      #898781;
+  --grid:       #e1e0d9;
+  --rule:       #c3c2b7;
+  --border:     rgba(11,11,11,0.10);
+  --accent:     #2a78d6;
+  --good:       #0ca30c;
+  --warning:    #fab219;
+  --critical:   #d03b3b;
+  --radius:     10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --plane: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7;
+    --muted: #898781; --grid: #2c2c2a; --rule: #383835;
+    --border: rgba(255,255,255,0.10); --accent: #3987e5;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --plane: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7;
+  --muted: #898781; --grid: #2c2c2a; --rule: #383835;
+  --border: rgba(255,255,255,0.10); --accent: #3987e5;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--plane); color: var(--ink);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+.wrap { max-width: 1120px; margin: 0 auto; padding: 28px 20px 64px; }
+
+header { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; margin-bottom: 4px; }
+h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
+h1 span { color: var(--muted); font-weight: 400; }
+.spacer { flex: 1; }
+.meta { color: var(--muted); font-size: 13px; }
+
+.badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 9px; border-radius: 999px; font-size: 12.5px; font-weight: 600;
+  border: 1px solid var(--border); background: var(--surface);
+}
+.badge .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.badge.good .dot { background: var(--good); }
+.badge.bad  .dot { background: var(--critical); }
+.badge.warn .dot { background: var(--warning); }
+
+section { margin-top: 28px; }
+h2 {
+  font-size: 12px; text-transform: uppercase; letter-spacing: 0.07em;
+  color: var(--muted); margin: 0 0 10px; font-weight: 600;
+}
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(178px, 1fr)); gap: 12px; }
+.tile {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px 16px;
+}
+.tile .label { font-size: 12.5px; color: var(--ink-2); }
+.tile .value { font-size: 27px; line-height: 1.15; margin-top: 4px; letter-spacing: -0.02em; }
+.tile .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 4px 16px;
+}
+.row {
+  display: grid; grid-template-columns: 1fr 132px 96px; gap: 14px;
+  align-items: center; padding: 11px 0; border-bottom: 1px solid var(--grid);
+}
+.row:last-child { border-bottom: 0; }
+.row .name { font-size: 13.5px; }
+.row .name small { color: var(--muted); display: block; font-size: 12px; }
+.row .num { text-align: right; font-variant-numeric: tabular-nums; font-size: 13.5px; }
+
+/* utilisation meter: thin mark, rounded data-end, recessive track */
+.meter { height: 6px; background: var(--grid); border-radius: 999px; overflow: hidden; }
+.meter i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+.meter i.over { background: var(--critical); }
+
+table { width: 100%; border-collapse: collapse; }
+th {
+  text-align: left; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--muted); font-weight: 600; padding: 10px 0; border-bottom: 1px solid var(--rule);
+}
+td { padding: 9px 0; border-bottom: 1px solid var(--grid); font-size: 13.5px; vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+td.seq { color: var(--muted); font-variant-numeric: tabular-nums; width: 34px; }
+td.dig { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+td.detail { color: var(--ink-2); }
+
+.run { margin-bottom: 14px; }
+.run-head { display: flex; align-items: center; gap: 10px; margin: 0 0 6px; }
+.run-head .t { font-size: 13px; color: var(--ink-2); }
+
+select, button {
+  font: inherit; font-size: 13px; padding: 5px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--ink);
+}
+button { cursor: pointer; }
+.empty { color: var(--muted); font-size: 13.5px; padding: 14px 0; }
+.err {
+  border: 1px solid var(--critical); border-radius: var(--radius);
+  padding: 12px 14px; font-size: 13.5px; background: var(--surface);
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Aegis <span>· governance console</span></h1>
+    <span class="spacer"></span>
+    <span id="market" class="badge"><span class="dot"></span><span>loading</span></span>
+    <button id="theme" title="Toggle theme">◐</button>
+  </header>
+  <div class="meta" id="acct">&nbsp;</div>
+
+  <section>
+    <h2>Portfolio</h2>
+    <div class="tiles" id="tiles"></div>
+  </section>
+
+  <section>
+    <h2>Mandate limits</h2>
+    <div class="card" id="limits"></div>
+  </section>
+
+  <section>
+    <h2>
+      Audit chain
+      <select id="day"></select>
+    </h2>
+    <div id="audit"></div>
+  </section>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const money = (n) => "$" + n.toLocaleString(undefined, {maximumFractionDigits: 0});
+const pct = (n) => n.toFixed(2) + "%";
+
+$("theme").onclick = () => {
+  const dark = document.documentElement.getAttribute("data-theme") === "dark";
+  document.documentElement.setAttribute("data-theme", dark ? "light" : "dark");
+};
+
+function meter(value, cap) {
+  const frac = cap > 0 ? Math.min(value / cap, 1) : 0;
+  const over = cap > 0 && value > cap;
+  return `<div class="meter"><i class="${over ? "over" : ""}" style="width:${(frac * 100).toFixed(1)}%"></i></div>`;
+}
+
+function limitRow(name, note, value, cap, fmt) {
+  return `<div class="row">
+    <div class="name">${name}<small>${note}</small></div>
+    ${cap != null ? meter(value, cap) : "<div></div>"}
+    <div class="num">${fmt(value)}${cap != null ? " / " + fmt(cap) : ""}</div>
+  </div>`;
+}
+
+async function loadState() {
+  let s;
+  try {
+    const r = await fetch("/api/state");
+    if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+    s = await r.json();
+  } catch (e) {
+    $("tiles").innerHTML = `<div class="err"><strong>Alpaca unreachable.</strong> ${e.message}</div>`;
+    $("market").className = "badge bad";
+    $("market").innerHTML = `<span class="dot"></span><span>unavailable</span>`;
+    return null;
+  }
+  const m = s.market, p = s.portfolio, a = s.account;
+  $("market").className = "badge " + (m.is_open ? "good" : "");
+  $("market").innerHTML = `<span class="dot"></span><span>market ${m.is_open ? "open" : "closed"}</span>`;
+  $("acct").textContent =
+    `${a.number} · ${a.status.replace("AccountStatus.", "")} · options level ${a.options_level}` +
+    ` · updated ${new Date(s.as_of).toLocaleTimeString()}`;
+
+  $("tiles").innerHTML = [
+    ["Equity", money(a.equity), ""],
+    ["Buying power", money(a.buying_power), ""],
+    ["Open positions", p.open_positions, p.symbols.join(", ") || "none held"],
+    ["Portfolio delta", p.portfolio_delta.toFixed(1), "share-equivalents"],
+    ["Capital at risk", pct(p.capital_at_risk_pct), "of equity"],
+  ].map(([l, v, sub]) =>
+    `<div class="tile"><div class="label">${l}</div><div class="value">${v}</div><div class="sub">${sub}</div></div>`
+  ).join("");
+  return s;
+}
+
+async function loadMandate(state) {
+  const m = await (await fetch("/api/mandate")).json();
+  const rl = m.risk_limits, st = m.strategy, p = state ? state.portfolio : null;
+  const rows = [];
+  if (p) {
+    rows.push(limitRow("Open positions", "max_open_positions", p.open_positions,
+                       rl.max_open_positions, (n) => n.toFixed(0)));
+    rows.push(limitRow("Capital at risk", "max_total_capital_at_risk_pct",
+                       p.capital_at_risk_pct, rl.max_total_capital_at_risk_pct, pct));
+    rows.push(limitRow("Portfolio delta", "max_portfolio_delta_abs",
+                       Math.abs(p.portfolio_delta), rl.max_portfolio_delta_abs,
+                       (n) => n.toFixed(1)));
+  }
+  rows.push(limitRow("Max loss per trade", "max_loss_per_trade_usd",
+                     rl.max_loss_per_trade_usd, null, money));
+  rows.push(limitRow("Short leg delta ceiling", "strategy.delta_limits.short_leg_abs_delta_max",
+                     st.delta_limits.short_leg_abs_delta_max, null, (n) => n.toFixed(2)));
+  rows.push(limitRow("Credit / max loss floor", "strategy.min_credit_to_max_loss_ratio",
+                     st.min_credit_to_max_loss_ratio, null, (n) => n.toFixed(2)));
+  rows.push(limitRow("Expiry window", "strategy.expiry_window_days",
+                     st.expiry_window_days.min, null,
+                     () => `${st.expiry_window_days.min}–${st.expiry_window_days.max} days`));
+  $("limits").innerHTML = rows.join("");
+}
+
+const TONE = {
+  SUBMITTED: "good", GUARD_APPROVED: "good",
+  GUARD_REFUSED: "bad", REJECTED: "bad", BROKER_RETRY: "warn",
+};
+
+function detail(e) {
+  const p = e.payload || {};
+  if (e.event === "SUBMITTED") return `order ${p.broker_order_id || ""}`;
+  if (e.event === "OPERATOR_DECISION") return `${p.operator || ""} → ${p.decision || ""}`;
+  if (e.event === "GUARD_REFUSED" || e.event === "REJECTED")
+    return (p.reasons || [p.reason]).filter(Boolean).join("; ");
+  if (e.event === "CRITIQUED")
+    return p.passed ? "no concerns" : `${(p.concerns || []).length} concern(s)`;
+  if (e.event === "PROPOSED")
+    return `${p.proposal_id || ""}${p.max_loss_usd ? " · max loss $" + p.max_loss_usd : ""}`;
+  return "";
+}
+
+async function loadAudit(day) {
+  const q = day ? `?day=${day}` : "";
+  const a = await (await fetch("/api/audit" + q)).json();
+  if (!a.runs.length) { $("audit").innerHTML = `<div class="empty">No decisions logged for this day.</div>`; return; }
+  $("audit").innerHTML = a.runs.map((run, i) => `
+    <div class="run">
+      <div class="run-head">
+        <span class="badge ${run.intact ? "good" : "bad"}">
+          <span class="dot"></span><span>${run.intact ? "verified" : "chain broken"}</span>
+        </span>
+        <span class="t">run ${i + 1} · ${run.entries.length} entries · head ${run.head.slice(0, 12)}…</span>
+        ${run.problem ? `<span class="t">${run.problem}</span>` : ""}
+      </div>
+      <div class="card">
+        <table>
+          <thead><tr><th>#</th><th>Event</th><th>Detail</th><th>Digest</th></tr></thead>
+          <tbody>${run.entries.map((e) => `
+            <tr>
+              <td class="seq">${e.seq}</td>
+              <td><span class="badge ${TONE[e.event] || ""}"><span class="dot"></span><span>${e.event}</span></span></td>
+              <td class="detail">${detail(e)}</td>
+              <td class="dig">${e.digest.slice(0, 16)}…</td>
+            </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>
+    </div>`).join("");
+}
+
+async function boot() {
+  const days = (await (await fetch("/api/days")).json()).days;
+  $("day").innerHTML = days.map((d) => `<option value="${d}">${d}</option>`).join("");
+  $("day").onchange = () => loadAudit($("day").value);
+  const state = await loadState();
+  await loadMandate(state);
+  await loadAudit(days[0]);
+  setInterval(async () => { const s = await loadState(); if (s) loadMandate(s); }, 20000);
+}
+boot();
+</script>
+</body>
+</html>

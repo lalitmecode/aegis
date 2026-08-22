@@ -85,3 +85,51 @@ def test_non_serialisable_payloads_do_not_crash_the_log(tmp_path):
     audit = build(tmp_path / "audit.jsonl")
     audit.record("SUBMITTED", {"max_loss": Decimal("390.00"), "at": T0})
     assert audit.verify() == (True, None)
+
+
+# --------------------------------------------------------------------------
+# reading a log back
+# --------------------------------------------------------------------------
+
+
+def test_read_runs_splits_a_file_into_its_processes(tmp_path):
+    """Each run restarts from genesis, so a day's file holds several chains."""
+    from aegis.core.audit import read_runs
+
+    path = tmp_path / "audit.jsonl"
+    for _ in range(3):
+        audit = build(path)
+        audit.record("PROPOSED", {})
+        audit.record("SUBMITTED", {})
+
+    runs = read_runs(path)
+    assert len(runs) == 3
+    assert all(run.intact for run in runs)
+    assert all(len(run.entries) == 2 for run in runs)
+
+
+def test_read_runs_detects_an_edited_entry(tmp_path):
+    import json
+
+    from aegis.core.audit import read_runs
+
+    path = tmp_path / "audit.jsonl"
+    audit = build(path)
+    audit.record("REJECTED", {"reason": "max loss exceeded"})
+    audit.record("SUBMITTED", {"broker_order_id": "ord-1"})
+
+    lines = path.read_text().splitlines()
+    edited = json.loads(lines[0])
+    edited["payload"] = {"reason": "all good"}
+    lines[0] = json.dumps(edited)
+    path.write_text("\n".join(lines) + "\n")
+
+    run = read_runs(path)[0]
+    assert not run.intact
+    assert "digest does not match" in run.problem
+
+
+def test_read_runs_on_a_missing_file_is_empty(tmp_path):
+    from aegis.core.audit import read_runs
+
+    assert read_runs(tmp_path / "nope.jsonl") == []

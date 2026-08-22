@@ -62,6 +62,72 @@ def _digest(seq: int, event: str, payload: Mapping[str, Any], recorded_at: str, 
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
+@dataclass(frozen=True, slots=True)
+class AuditRun:
+    """One process's worth of entries, and whether the chain holds."""
+
+    entries: tuple[AuditEntry, ...]
+    intact: bool
+    problem: str | None = None
+
+    @property
+    def head(self) -> str:
+        return self.entries[-1].digest if self.entries else GENESIS
+
+
+def _verify(entries) -> tuple[bool, str | None]:
+    previous = GENESIS
+    for i, entry in enumerate(entries):
+        if entry.seq != i:
+            return False, f"entry {i} claims seq {entry.seq}"
+        if entry.previous != previous:
+            return False, f"entry {i} does not link to entry {i - 1}"
+        expected = _digest(
+            entry.seq, entry.event, entry.payload, entry.recorded_at, entry.previous
+        )
+        if entry.digest != expected:
+            return False, f"entry {i} digest does not match its contents"
+        previous = entry.digest
+    return True, None
+
+
+def read_runs(path: str | os.PathLike[str]) -> list[AuditRun]:
+    """Read a log file back as its constituent runs, each verified.
+
+    Each process starts a fresh chain from genesis and appends to the day's
+    file, so one file holds several chains rather than one. Splitting on
+    ``seq == 0`` recovers them; verifying the file as a single chain would
+    report a break at every process boundary and mean nothing.
+    """
+    file = Path(path)
+    if not file.exists():
+        return []
+
+    runs: list[list[AuditEntry]] = []
+    for line in file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        raw = json.loads(line)
+        entry = AuditEntry(
+            seq=raw["seq"],
+            event=raw["event"],
+            payload=raw.get("payload") or {},
+            recorded_at=raw["recorded_at"],
+            previous=raw["previous"],
+            digest=raw["digest"],
+        )
+        if entry.seq == 0 or not runs:
+            runs.append([])
+        runs[-1].append(entry)
+
+    out = []
+    for entries in runs:
+        intact, problem = _verify(entries)
+        out.append(AuditRun(tuple(entries), intact, problem))
+    return out
+
+
 class HashChainAudit:
     """Implements the gateway's ``AuditChain`` protocol, with verification."""
 
@@ -95,19 +161,7 @@ class HashChainAudit:
 
     def verify(self) -> tuple[bool, str | None]:
         """Recompute the chain. Returns ``(intact, first_problem)``."""
-        previous = GENESIS
-        for i, entry in enumerate(self._entries):
-            if entry.seq != i:
-                return False, f"entry {i} claims seq {entry.seq}"
-            if entry.previous != previous:
-                return False, f"entry {i} does not link to entry {i - 1}"
-            expected = _digest(
-                entry.seq, entry.event, entry.payload, entry.recorded_at, entry.previous
-            )
-            if entry.digest != expected:
-                return False, f"entry {i} digest does not match its contents"
-            previous = entry.digest
-        return True, None
+        return _verify(self._entries)
 
     @property
     def entries(self) -> tuple[AuditEntry, ...]:
