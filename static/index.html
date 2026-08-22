@@ -92,10 +92,19 @@ h2 {
 
 /* utilisation meter: thin mark, rounded data-end, recessive track */
 .meter { height: 6px; background: var(--grid); border-radius: 999px; overflow: hidden; }
+@media (max-width: 620px) {
+  .row { grid-template-columns: 1fr auto; }
+  .track { display: none; }        /* the "3 / 5" text still carries the value */
+  .wrap { padding: 20px 14px 48px; }
+}
 .meter i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
 .meter i.over { background: var(--critical); }
 
-table { width: 100%; border-collapse: collapse; }
+/* Wide content scrolls inside its own container; the page never does.
+   Without this the table's min-content width (digests, broker order ids)
+   widens the body and clips everything else off-screen. */
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; min-width: 560px; }
 th {
   text-align: left; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em;
   color: var(--muted); font-weight: 600; padding: 10px 0; border-bottom: 1px solid var(--rule);
@@ -170,7 +179,7 @@ function meter(value, cap) {
 function limitRow(name, note, value, cap, fmt) {
   return `<div class="row">
     <div class="name">${name}<small>${note}</small></div>
-    ${cap != null ? meter(value, cap) : "<div></div>"}
+    <div class="track">${cap != null ? meter(value, cap) : ""}</div>
     <div class="num">${fmt(value)}${cap != null ? " / " + fmt(cap) : ""}</div>
   </div>`;
 }
@@ -244,6 +253,7 @@ function detail(e) {
     return (p.reasons || [p.reason]).filter(Boolean).join("; ");
   if (e.event === "CRITIQUED")
     return p.passed ? "no concerns" : `${(p.concerns || []).length} concern(s)`;
+  if (e.event === "GUARD_APPROVED") return "every clause passes";
   if (e.event === "PROPOSED")
     return `${p.proposal_id || ""}${p.max_loss_usd ? " · max loss $" + p.max_loss_usd : ""}`;
   return "";
@@ -263,7 +273,7 @@ async function loadAudit(day) {
         ${run.problem ? `<span class="t">${run.problem}</span>` : ""}
       </div>
       <div class="card">
-        <table>
+        <div class="table-wrap"><table>
           <thead><tr><th>#</th><th>Event</th><th>Detail</th><th>Digest</th></tr></thead>
           <tbody>${run.entries.map((e) => `
             <tr>
@@ -273,7 +283,7 @@ async function loadAudit(day) {
               <td class="dig">${e.digest.slice(0, 16)}…</td>
             </tr>`).join("")}
           </tbody>
-        </table>
+        </table></div>
       </div>
     </div>`).join("");
 }
