@@ -105,39 +105,69 @@ are refused.
 pytest -q
 ```
 
-With keys in `.env`, the live option chain is also runnable:
+With paper keys in `.env`, the whole thing runs against Alpaca:
 
 ```bash
-python -m aegis.core.option_chain SPY --dte 30
+python run_live.py --symbols SPY QQQ NVDA
 ```
+
+For each symbol it fetches live state, proposes a spread, has the critic argue with it, prints
+every mandate clause with the verdict, and then **stops and asks a human**. There is no `--yes`
+flag: `skip` is the default on the decision prompt and submitting needs a second confirmation.
+The option chain on its own is also runnable — `python -m aegis.core.option_chain SPY --dte 30`.
+
+## Console
+
+```bash
+python -m aegis.web        # http://127.0.0.1:8000
+```
+
+![The Aegis governance console](docs/console.png)
+
+A read-only view of what the operator is being asked to trust: the account the mandate is
+measured against, each limit with its current utilisation, and the day's audit chains with
+verification **recomputed on read** rather than taken from the file. Edit a payload on disk and
+the console says the chain is broken.
+
+It is read-only on purpose. `ExecutionGateway` being the only path to the broker is a claim the
+rest of the system rests on, so there is no approval endpoint here — a test asserts the app
+exposes no verb but `GET` and `HEAD`. Approving a trade stays in the terminal, where the human
+gate already lives.
 
 ## Testing
 
-84 tests, all passing, no network calls -- the trading client, the chain fetcher and the market
-session are stubbed everywhere.
+244 tests, all passing, no network calls -- the trading client, the chain fetcher, the market
+session and both LLM backends are stubbed everywhere.
 
 Passing tests are weak evidence on their own: they show the code does something, not that the
-gates are load-bearing. So each gate was mutation tested by disabling it and re-running the
-suite. Sixteen mutations across three rounds -- removing the content-hash check, the guard
-re-evaluation, the expiry check, the conservative `max(derived, claimed)`, the short-leg delta
-ceiling, the buying-power buffer, the open-interest floor, the Eastern-time localization of
-calendar data, and others.
+gates are load-bearing. So every gate has been mutation tested -- disabled one at a time, suite
+re-run: the content-hash check, the guard re-evaluation, the expiry check, the conservative
+`max(derived, claimed)`, the short-leg delta ceiling, the buying-power buffer, the open-interest
+floor, the Eastern-time localization of calendar data, the ratio preference, the retry
+predicate, the strike band, and others. Almost all are caught immediately by the test written
+for them.
 
-Fifteen were caught immediately, each by the test written for it.
+**Six survived over the life of the project, and every one exposed a defect in the test rather
+than in the code:**
 
-**One survived, and it was the useful one.** Disabling the gateway's "no verifier configured"
-refusal changed nothing: with the branch gone, `self._verifier.verify()` was called on `None`,
-raised `AttributeError`, and was caught by the generic handler that converts verifier exceptions
-into `VerificationFailed`. The suite stayed green because the outcome type was identical. The
-system still failed closed -- but by accident rather than by design, and the audit trail would
-have recorded a confusing `AttributeError` string instead of a stated reason. The test now
-asserts on the refusal message, not just the exception type, and that mutation is caught.
+| Mutation that survived | What the test was actually doing |
+| --- | --- |
+| Gateway's "no verifier configured" refusal removed | `None.verify()` raised `AttributeError`, which the generic handler turned into the same `VerificationFailed` — right outcome, by accident |
+| Default Gemini model flipped to one the account cannot use | nothing pinned the constant |
+| Environment made to beat an explicit `model=` | the precedence test only exercised the dict-env path, never `os.environ` |
+| `llm` dropped from `render_proposal(proposal, llm)` in `main()` | the render tests called the function directly; nothing checked the wiring |
+| Root log level silenced to `ERROR` | the test asserted through `caplog`, which sets the root level itself and could never observe it |
+| Gemini's `UNAVAILABLE` status-string fallback deleted | every test exception also carried a numeric code, so the branch was never the deciding factor |
+
+Each is now pinned. That is the argument for the practice: a green suite told us nothing six
+times, and only breaking the code on purpose said so.
 
 ## Stack
 
 Python 3.14, [alpaca-py](https://github.com/alpacahq/alpaca-py) 0.44 for market data and order
-submission, pytest for tests. No web framework, no database; the mandate is a YAML file and the
-audit chain is an injected interface.
+submission, pytest for tests, and FastAPI serving one static page for the console. No database;
+the mandate is a YAML file and the audit chain is an append-only JSONL log behind an injected
+interface.
 
 The language model is a configuration choice, not a dependency. `aegis/agents/llm.py` defines a
 one-method `LLMClient` protocol — `complete(system, user)` — with backends for Gemini
@@ -167,6 +197,14 @@ taken by accident. Read market data through anything; write through one gate.
 | `aegis/core/session.py` | market session state from Alpaca's clock and calendar |
 | `aegis/core/option_chain.py` | option chain retrieval, joined across two Alpaca endpoints |
 | `aegis/core/retry.py` | shared definition of which failures are worth retrying |
+| `aegis/core/audit.py` | hash-chained decision log; `read_runs()` verifies on read |
+| `aegis/core/portfolio.py` | live portfolio state, and the gateway's `PortfolioSource` |
+| `aegis/agents/research.py` | proposes trades; the code decides, the model only explains |
+| `aegis/agents/critic.py` | argues against a proposal; cannot approve one |
+| `aegis/agents/llm.py` | one-method `LLMClient` protocol, Gemini and Claude backends |
+| `aegis/web/app.py` | the read-only console |
+| `run_live.py` | the operator's terminal: propose, critique, verdict, human gate |
+| `demo.py` | the same pipeline offline, with the chain and broker stubbed |
 | `config/mandate.yaml` | the limits every gate enforces |
 
 ## Known gaps
@@ -183,5 +221,8 @@ taken by accident. Read market data through anything; write through one gate.
   claimed against an observed 0.45, not a two-cent shading.
 - The mandate prohibits opening within 7 days of earnings. Nothing enforces it; that needs a
   corporate-actions feed.
-- `aegis/agents/` is empty. The proposer and critic are not built yet -- this repo is the half
-  that says no.
+- The audit chain is tamper-*evident*, not tamper-proof. Anyone who can rewrite the log can also
+  recompute it; anchoring the head hash somewhere the writer does not control is what would
+  close that.
+- The console has been rendered and checked in both themes, but headless Chrome here refuses a
+  viewport below ~497px, so phone widths are unverified.
