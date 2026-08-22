@@ -1,4 +1,8 @@
 ![Aegis](docs/aegis-cover.png)
+
+**Live console:** [aegis-ssnh.onrender.com](https://aegis-ssnh.onrender.com) — free tier, so the
+first request after an idle period takes ~30s to wake.
+
 # Aegis
 
 A mandate-governed options trading agent, where the interesting engineering is in the refusals.
@@ -117,6 +121,11 @@ flag: `skip` is the default on the decision prompt and submitting needs a second
 The option chain on its own is also runnable — `python -m aegis.core.option_chain SPY --dte 30`.
 
 ## Console
+
+Deployed at **[aegis-ssnh.onrender.com](https://aegis-ssnh.onrender.com)** (free tier, ~30s cold
+start). That instance runs with no broker or LLM credentials at all and replays a committed,
+sanitised audit trail — `docs/sample-decisions.jsonl` — so the portfolio panel reports itself
+unconfigured while the mandate and the chain render normally. To run it against your own logs:
 
 ```bash
 python -m aegis.web        # http://127.0.0.1:8000
