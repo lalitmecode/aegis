@@ -421,3 +421,122 @@ def test_page_assets_ship_inside_the_package():
 
     assert web_app.STATIC_DIR.parent == web_app.HERE
     assert (web_app.STATIC_DIR / "index.html").exists()
+
+
+# --------------------------------------------------------------------------
+# the console may never be pointed at a live account
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def no_dotenv(monkeypatch, tmp_path):
+    """Isolate from the repo's own .env so the environment under test is exact."""
+    for var in ("ALPACA_API_KEY", "ALPACA_SECRET_KEY", "ALPACA_PAPER_TRADE"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr("aegis.web.app.ROOT", tmp_path)
+    return monkeypatch
+
+
+def _with_keys(env, paper=None):
+    env.setenv("ALPACA_API_KEY", "PK-test")
+    env.setenv("ALPACA_SECRET_KEY", "secret-test")
+    if paper is not None:
+        env.setenv("ALPACA_PAPER_TRADE", paper)
+
+
+def test_keys_without_a_paper_flag_refuse_to_start(no_dotenv):
+    _with_keys(no_dotenv)  # ALPACA_PAPER_TRADE unset
+    with pytest.raises(RuntimeError, match="ALPACA_PAPER_TRADE"):
+        create_app()
+
+
+def test_keys_with_paper_false_refuse_to_start(no_dotenv):
+    _with_keys(no_dotenv, "false")
+    with pytest.raises(RuntimeError, match="not 'true'"):
+        create_app()
+
+
+def test_keys_with_paper_true_start(no_dotenv):
+    _with_keys(no_dotenv, "true")
+    assert create_app() is not None
+
+
+def test_no_keys_at_all_starts_credential_free(no_dotenv):
+    c = TestClient(create_app())
+    assert c.get("/").status_code == 200
+    assert c.get("/api/state").json() == {"configured": False, "reason": "no Alpaca credentials"}
+
+
+@pytest.mark.parametrize("flag", ["", "  ", "1", "yes", "paper", "TRUE ", "False", "0"])
+def test_only_an_affirmative_flag_is_accepted(no_dotenv, flag):
+    """Fails closed: anything that is not an affirmative 'true' refuses."""
+    _with_keys(no_dotenv, flag)
+    if flag.strip().lower() == "true":
+        assert create_app() is not None
+    else:
+        with pytest.raises(RuntimeError):
+            create_app()
+
+
+def test_the_guard_runs_at_creation_not_on_first_request(no_dotenv):
+    """uvicorn must fail to boot, not serve a broken console until someone calls it."""
+    _with_keys(no_dotenv, "false")
+    with pytest.raises(RuntimeError):
+        create_app()  # no request made
+
+
+def test_the_paper_endpoint_is_pinned_in_code(no_dotenv, monkeypatch):
+    """No environment variable may choose the endpoint."""
+    import alpaca.trading.client as trading
+
+    captured: dict = {}
+
+    class RecordingTradingClient:
+        def __init__(self, key, secret, **kwargs):
+            captured.update(kwargs)
+
+        def get_account(self):
+            return SimpleNamespace(
+                account_number="PA000", status="AccountStatus.ACTIVE",
+                equity="1", buying_power="1", options_trading_level=3,
+            )
+
+    _with_keys(no_dotenv, "true")
+    monkeypatch.setattr(trading, "TradingClient", RecordingTradingClient)
+    TestClient(create_app(portfolio=StubPortfolio(), session=StubSession())).get("/api/state")
+
+    assert captured.get("paper") is True, "the paper endpoint must be pinned"
+    assert "url_override" not in captured, "a base URL must never be supplied"
+
+
+def test_the_endpoint_ignores_the_environment_after_startup(no_dotenv, monkeypatch):
+    """Defence in depth: flipping the flag at runtime must not reach the endpoint.
+
+    The startup guard already refuses a non-paper flag, so guard and endpoint
+    agree at boot. This proves they still agree if the environment changes
+    underneath a running process -- the endpoint is pinned in code, not read.
+    """
+    import alpaca.trading.client as trading
+
+    captured: dict = {}
+
+    class RecordingTradingClient:
+        def __init__(self, key, secret, **kwargs):
+            captured.update(kwargs)
+
+        def get_account(self):
+            return SimpleNamespace(
+                account_number="PA000", status="AccountStatus.ACTIVE",
+                equity="1", buying_power="1", options_trading_level=3,
+            )
+
+    _with_keys(no_dotenv, "true")
+    monkeypatch.setattr(trading, "TradingClient", RecordingTradingClient)
+    app = create_app(portfolio=StubPortfolio(), session=StubSession())
+
+    # the process is up; now the environment lies to it
+    no_dotenv.setenv("ALPACA_PAPER_TRADE", "false")
+    TestClient(app).get("/api/state")
+
+    assert captured.get("paper") is True, "endpoint followed the environment"
+    assert "url_override" not in captured

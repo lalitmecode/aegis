@@ -40,6 +40,12 @@ LOGS_DIR = ROOT / "logs"
 #: and the date-based lookup applies.
 DECISION_LOG_ENV = "AEGIS_DECISION_LOG"
 
+#: The console is a read-only window onto a paper-trading account. It has no
+#: order path, but it does hold live credentials in memory once configured, so
+#: it refuses to start against anything but paper rather than trusting that a
+#: read-only app cannot do harm.
+PAPER_FLAG_ENV = "ALPACA_PAPER_TRADE"
+
 
 def _load_env() -> None:
     """Load .env before anything reads it.
@@ -57,6 +63,31 @@ def _load_env() -> None:
         load_dotenv(env_file)
 
 
+def _assert_paper_only() -> None:
+    """Refuse to start if credentials are present without a paper affirmation.
+
+    Fails closed: an unset, empty, or non-"true" flag all refuse. Only an
+    explicit affirmative starts the console with credentials attached.
+
+    No credentials at all is a supported configuration and returns quietly --
+    that is how the deployed instance runs.
+    """
+    if not os.environ.get("ALPACA_API_KEY"):
+        return
+
+    flag = (os.environ.get(PAPER_FLAG_ENV) or "").strip().lower()
+    if flag != "true":
+        shown = os.environ.get(PAPER_FLAG_ENV)
+        raise RuntimeError(
+            "Refusing to start: ALPACA_API_KEY is set but "
+            f"{PAPER_FLAG_ENV} is {shown!r}, not 'true'. This console is only "
+            "ever pointed at a paper account. Set "
+            f'{PAPER_FLAG_ENV}="true" to confirm the credentials are for paper '
+            "trading, or unset ALPACA_API_KEY to run the console without a "
+            "broker connection."
+        )
+
+
 def create_app(
     *,
     clients: Any | None = None,
@@ -70,6 +101,7 @@ def create_app(
     """Build the app. Every dependency is injectable so tests never hit the network."""
     app = FastAPI(title="Aegis governance console", docs_url=None, redoc_url=None)
     _load_env()
+    _assert_paper_only()
     log_override = decision_log or os.environ.get(DECISION_LOG_ENV) or None
     if log_override:
         log_override = Path(log_override)
@@ -82,11 +114,28 @@ def create_app(
     state: dict[str, Any] = {"clients": clients, "portfolio": portfolio, "session": session}
 
     def _clients():
-        """Build Alpaca clients on first use, not at import."""
+        """Build Alpaca clients on first use, not at import.
+
+        Deliberately not ``Clients.from_env()``: that picks paper vs live from
+        ``ALPACA_PAPER_TRADE``. Here the endpoint is pinned to paper in code and
+        ``url_override`` is never passed, so no environment variable can point
+        this process at a live account -- the startup guard and the endpoint
+        agree by construction rather than by configuration.
+        """
         if state["clients"] is None:
+            from alpaca.data.historical.option import OptionHistoricalDataClient
+            from alpaca.data.historical.stock import StockHistoricalDataClient
+            from alpaca.trading.client import TradingClient
+
             from aegis.core.option_chain import Clients
 
-            state["clients"] = Clients.from_env()
+            key = os.environ["ALPACA_API_KEY"]
+            secret = os.environ["ALPACA_SECRET_KEY"]
+            state["clients"] = Clients(
+                trading=TradingClient(key, secret, paper=True),
+                stock=StockHistoricalDataClient(key, secret),
+                option=OptionHistoricalDataClient(key, secret),
+            )
         return state["clients"]
 
     def _portfolio():
