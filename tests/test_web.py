@@ -181,7 +181,7 @@ def _vars(scope: str) -> dict[str, str]:
     import re
     from pathlib import Path
 
-    html = (Path(__file__).resolve().parent.parent / "static" / "index.html").read_text()
+    html = (Path(__file__).resolve().parent.parent / "aegis" / "web" / "static" / "index.html").read_text()
     if scope == "light":
         block = re.search(r":root \{(.*?)\n\}", html, re.S).group(1)
     else:
@@ -207,7 +207,7 @@ def test_a_status_dot_is_never_shown_without_a_label():
     import re
     from pathlib import Path
 
-    html = (Path(__file__).resolve().parent.parent / "static" / "index.html").read_text()
+    html = (Path(__file__).resolve().parent.parent / "aegis" / "web" / "static" / "index.html").read_text()
     dots = list(re.finditer(r'<span class="dot"></span>', html))
     assert dots, "no status dots found — has the badge markup changed?"
     for dot in dots:
@@ -220,7 +220,7 @@ def test_a_status_dot_is_never_shown_without_a_label():
 def test_every_verdict_badge_names_its_state():
     from pathlib import Path
 
-    html = (Path(__file__).resolve().parent.parent / "static" / "index.html").read_text()
+    html = (Path(__file__).resolve().parent.parent / "aegis" / "web" / "static" / "index.html").read_text()
     for label in ("verified", "chain broken", "market ", "unavailable"):
         assert label in html, f"no textual label for {label!r}"
 
@@ -332,7 +332,7 @@ def test_the_decision_log_override_serves_the_sample(monkeypatch):
 
 
 def test_the_page_carries_a_sample_banner():
-    html = (pathlib.Path(__file__).resolve().parent.parent / "static" / "index.html").read_text()
+    html = (pathlib.Path(__file__).resolve().parent.parent / "aegis" / "web" / "static" / "index.html").read_text()
     assert 'id="banner"' in html
     assert "Sample audit trail" in html
     assert "not live data" in html
@@ -366,3 +366,58 @@ def test_requirements_declare_what_the_start_command_needs():
     reqs = (root / "requirements.txt").read_text().lower()
     for pkg in ("fastapi", "uvicorn", "pyyaml"):
         assert re.search(rf"^{pkg}[><=~]", reqs, re.M), f"{pkg} missing from requirements.txt"
+
+
+# --------------------------------------------------------------------------
+# the console must not care where the process was started from
+# --------------------------------------------------------------------------
+
+
+def test_the_page_is_served_from_any_working_directory(monkeypatch, tmp_path):
+    """A deploy runs from a different cwd than the checkout; nothing covered this."""
+    monkeypatch.chdir(tmp_path)
+    response = client().get("/")
+    assert response.status_code == 200
+    assert "governance console" in response.text
+    assert "Sample audit trail" in response.text
+
+
+def test_every_endpoint_works_from_a_foreign_working_directory(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    c = client()
+    for path in ("/", "/api/mandate", "/api/audit", "/api/days", "/api/state"):
+        assert c.get(path).status_code == 200, path
+
+
+def test_the_static_mount_resolves_from_the_package(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    response = client().get("/static/index.html")
+    assert response.status_code == 200
+    assert "governance console" in response.text
+
+
+def test_a_relative_decision_log_is_anchored_to_the_repo(monkeypatch, tmp_path):
+    """render.yaml passes a relative path; cwd must not decide whether it resolves."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AEGIS_DECISION_LOG", "docs/sample-decisions.jsonl")
+    body = TestClient(create_app(clients=StubClients(), portfolio=StubPortfolio(),
+                                 session=StubSession())).get("/api/audit").json()
+    assert body["sample"] is True
+    assert len(body["runs"][0]["entries"]) == 13
+
+
+def test_no_module_level_path_in_the_web_package_is_relative():
+    """Any relative Path constant here would resolve against the cwd."""
+    from aegis.web import app as web_app
+
+    for name in ("HERE", "ROOT", "STATIC_DIR", "MANDATE_PATH", "LOGS_DIR"):
+        value = getattr(web_app, name)
+        assert value.is_absolute(), f"{name} is relative: {value}"
+
+
+def test_page_assets_ship_inside_the_package():
+    """`ROOT / 'static'` only works from a source checkout; this survives install."""
+    from aegis.web import app as web_app
+
+    assert web_app.STATIC_DIR.parent == web_app.HERE
+    assert (web_app.STATIC_DIR / "index.html").exists()

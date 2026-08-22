@@ -24,8 +24,14 @@ from fastapi.staticfiles import StaticFiles
 
 from aegis.core.audit import read_runs
 
-ROOT = Path(__file__).resolve().parent.parent.parent
-STATIC_DIR = ROOT / "static"
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent.parent
+
+#: Page assets live inside the package, so they resolve from the module's own
+#: location rather than from the repo layout or the working directory. A
+#: `ROOT / "static"` path works only when the process runs from a source
+#: checkout; this one survives an installed package and any cwd.
+STATIC_DIR = HERE / "static"
 MANDATE_PATH = ROOT / "config" / "mandate.yaml"
 LOGS_DIR = ROOT / "logs"
 
@@ -65,7 +71,14 @@ def create_app(
     app = FastAPI(title="Aegis governance console", docs_url=None, redoc_url=None)
     _load_env()
     log_override = decision_log or os.environ.get(DECISION_LOG_ENV) or None
-    log_override = Path(log_override) if log_override else None
+    if log_override:
+        log_override = Path(log_override)
+        # A relative AEGIS_DECISION_LOG (render.yaml sets one) must not depend
+        # on where the process was started from.
+        if not log_override.is_absolute():
+            log_override = ROOT / log_override
+    else:
+        log_override = None
     state: dict[str, Any] = {"clients": clients, "portfolio": portfolio, "session": session}
 
     def _clients():
