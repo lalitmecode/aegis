@@ -11,7 +11,11 @@
   --surface:    #fcfcfb;
   --ink:        #0b0b0b;
   --ink-2:      #52514e;
-  --muted:      #898781;
+  /* Darker than the reference palette's #898781 (3.50:1 here). That value is
+     specified for axis chrome; this console spends it on content — digests,
+     held symbols, table headers — which owes 4.5:1. #74726d gives 4.68:1.
+     The dark scopes keep #898781, which already clears 4.5:1 on #1a1a19. */
+  --muted:      #74726d;
   --grid:       #e1e0d9;
   --rule:       #c3c2b7;
   --border:     rgba(11,11,11,0.10);

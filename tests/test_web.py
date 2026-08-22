@@ -157,3 +157,67 @@ def test_there_is_no_write_endpoint():
 @pytest.mark.parametrize("path", ["/api/state", "/api/mandate", "/api/audit"])
 def test_write_verbs_are_rejected(path):
     assert client().post(path).status_code == 405
+
+
+# --------------------------------------------------------------------------
+# the console's text has to be readable
+# --------------------------------------------------------------------------
+
+
+def _contrast(fg: str, bg: str) -> float:
+    def lum(h):
+        chan = [int(h[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+        lin = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in chan]
+        return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+
+    a, b = lum(fg), lum(bg)
+    return (max(a, b) + 0.05) / (min(a, b) + 0.05)
+
+
+def _vars(scope: str) -> dict[str, str]:
+    """Custom properties declared in one theme scope of the page."""
+    import re
+    from pathlib import Path
+
+    html = (Path(__file__).resolve().parent.parent / "static" / "index.html").read_text()
+    if scope == "light":
+        block = re.search(r":root \{(.*?)\n\}", html, re.S).group(1)
+    else:
+        block = re.search(r':root\[data-theme="dark"\] \{(.*?)\n\}', html, re.S).group(1)
+    return dict(re.findall(r"(--[a-z0-9-]+):\s*(#[0-9a-f]{6})", block))
+
+
+@pytest.mark.parametrize("scope", ["light", "dark"])
+def test_text_roles_meet_wcag_on_their_own_surface(scope):
+    """Small text owes 4.5:1; the meter is a graphical object and owes 3:1."""
+    v = _vars(scope)
+    surface = v["--surface"]
+    for role, need in (("--ink", 4.5), ("--ink-2", 4.5), ("--muted", 4.5), ("--accent", 3.0)):
+        got = _contrast(v[role], surface)
+        assert got >= need, f"{scope} {role} {v[role]} on {surface}: {got:.2f}:1 < {need}"
+
+
+def test_a_status_dot_is_never_shown_without_a_label():
+    """Warning is sub-3:1 on the light surface by design; the label is the mitigation.
+
+    So the rule is structural: a coloured dot never appears on its own.
+    """
+    import re
+    from pathlib import Path
+
+    html = (Path(__file__).resolve().parent.parent / "static" / "index.html").read_text()
+    dots = list(re.finditer(r'<span class="dot"></span>', html))
+    assert dots, "no status dots found — has the badge markup changed?"
+    for dot in dots:
+        following = html[dot.end():dot.end() + 60].lstrip()
+        assert following.startswith("<span>"), (
+            f"dot at offset {dot.start()} is not followed by a text span: {following[:40]!r}"
+        )
+
+
+def test_every_verdict_badge_names_its_state():
+    from pathlib import Path
+
+    html = (Path(__file__).resolve().parent.parent / "static" / "index.html").read_text()
+    for label in ("verified", "chain broken", "market ", "unavailable"):
+        assert label in html, f"no textual label for {label!r}"
