@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import pathlib
+import re
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
@@ -221,3 +223,146 @@ def test_every_verdict_badge_names_its_state():
     html = (Path(__file__).resolve().parent.parent / "static" / "index.html").read_text()
     for label in ("verified", "chain broken", "market ", "unavailable"):
         assert label in html, f"no textual label for {label!r}"
+
+
+# --------------------------------------------------------------------------
+# deployment: the console must serve with no credentials at all
+# --------------------------------------------------------------------------
+
+
+CREDENTIAL_VARS = (
+    "ALPACA_API_KEY", "ALPACA_SECRET_KEY", "ALPACA_PAPER_TRADE",
+    "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GEMINI_MODEL", "AEGIS_DECISION_LOG",
+)
+
+
+@pytest.fixture
+def bare_env(monkeypatch, tmp_path):
+    """No credentials, and no .env for create_app to pick them up from."""
+    for var in CREDENTIAL_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr("aegis.web.app.ROOT", tmp_path)  # no .env beside it
+    return monkeypatch
+
+
+def test_the_app_starts_with_no_environment_configured(bare_env):
+    app = create_app()
+    with TestClient(app) as c:
+        assert c.get("/api/days").status_code == 200
+        assert c.get("/api/mandate").status_code == 200
+        assert c.get("/").status_code == 200
+
+
+def test_state_reports_not_configured_rather_than_failing(bare_env):
+    """Missing credentials is a supported configuration, not a server fault."""
+    body = TestClient(create_app()).get("/api/state")
+    assert body.status_code == 200
+    assert body.json() == {"configured": False, "reason": "no Alpaca credentials"}
+
+
+def test_serving_the_console_imports_no_broker_or_llm_code(bare_env):
+    """The heavy SDKs are imported lazily; a credential-less deploy never needs them."""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys; from fastapi.testclient import TestClient;"
+        "from aegis.web.app import create_app;"
+        "c = TestClient(create_app());"
+        "c.get('/api/days'); c.get('/api/mandate'); c.get('/api/audit'); c.get('/');"
+        "loaded = [m for m in ('alpaca', 'google.genai', 'anthropic') if m in sys.modules];"
+        "print('LOADED=' + ','.join(loaded))"
+    )
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                         cwd=str(pathlib.Path(__file__).resolve().parent.parent))
+    assert "LOADED=" in out.stdout, out.stderr
+    assert out.stdout.strip().endswith("LOADED="), f"unexpected imports: {out.stdout}"
+
+
+# --------------------------------------------------------------------------
+# the committed sample audit trail
+# --------------------------------------------------------------------------
+
+
+SAMPLE = pathlib.Path(__file__).resolve().parent.parent / "docs" / "sample-decisions.jsonl"
+
+
+def test_the_sample_chain_verifies():
+    runs = read_runs(SAMPLE)
+    assert len(runs) == 1
+    assert runs[0].intact, runs[0].problem
+    assert len(runs[0].entries) == 13
+
+
+def test_the_sample_covers_the_whole_pipeline():
+    events = [e.event for e in read_runs(SAMPLE)[0].entries]
+    for required in ("PROPOSED", "CRITIQUED", "GUARD_APPROVED", "OPERATOR_DECISION",
+                     "SUBMITTED", "GUARD_REFUSED", "REJECTED"):
+        assert required in events, f"sample is missing a {required} entry"
+
+
+def test_the_refusal_cites_its_clauses():
+    entries = {e.event: e for e in read_runs(SAMPLE)[0].entries}
+    reasons = " ".join(entries["GUARD_REFUSED"].payload["reasons"])
+    for clause in ("max_loss_per_trade_usd", "max_loss_per_trade_pct_of_equity",
+                   "max_portfolio_delta_abs"):
+        assert clause in reasons
+
+
+def test_the_sample_is_sanitised():
+    """A committed log must not carry the real account, operator, or order ids."""
+    import re
+
+    text = SAMPLE.read_text()
+    assert not re.search(r"\bPA[0-9A-Z]{8,}\b", text), "account number present"
+    assert "lalit" not in text, "real operator name present"
+    for placeholder in ("00000000-0000-4000-8000", "operator"):
+        assert placeholder in text
+
+
+def test_the_decision_log_override_serves_the_sample(monkeypatch):
+    monkeypatch.setenv("AEGIS_DECISION_LOG", str(SAMPLE))
+    c = TestClient(create_app(clients=StubClients(), portfolio=StubPortfolio(),
+                              session=StubSession()))
+    audit = c.get("/api/audit").json()
+    assert audit["sample"] is True
+    assert audit["day"] == "sample"
+    assert len(audit["runs"][0]["entries"]) == 13
+    assert c.get("/api/days").json() == {"days": ["sample"], "sample": True}
+
+
+def test_the_page_carries_a_sample_banner():
+    html = (pathlib.Path(__file__).resolve().parent.parent / "static" / "index.html").read_text()
+    assert 'id="banner"' in html
+    assert "Sample audit trail" in html
+    assert "not live data" in html
+    assert 'meta.sample) $("banner").classList.add("on")' in html
+
+
+# --------------------------------------------------------------------------
+# the render blueprint has to match the code it deploys
+# --------------------------------------------------------------------------
+
+
+def test_render_blueprint_points_at_things_that_exist():
+    import yaml as _yaml
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    svc = _yaml.safe_load((root / "render.yaml").read_text())["services"][0]
+
+    assert svc["plan"] == "free" and svc["type"] == "web" and svc["runtime"] == "python"
+    # the start command must name the module path the app actually lives at
+    assert "aegis.web.app:app" in svc["startCommand"]
+    assert "--port $PORT" in svc["startCommand"]
+
+    env = {e["key"]: e["value"] for e in svc["envVars"]}
+    assert (root / env["AEGIS_DECISION_LOG"]).exists(), "sample log is not committed"
+    assert (root / svc["healthCheckPath"].lstrip("/")).parent  # path is well-formed
+
+
+def test_requirements_declare_what_the_start_command_needs():
+    """The build installs requirements.txt; uvicorn and fastapi must be in it."""
+    root = pathlib.Path(__file__).resolve().parent.parent
+    reqs = (root / "requirements.txt").read_text().lower()
+    for pkg in ("fastapi", "uvicorn", "pyyaml"):
+        assert re.search(rf"^{pkg}[><=~]", reqs, re.M), f"{pkg} missing from requirements.txt"

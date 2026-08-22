@@ -113,7 +113,7 @@ td { padding: 9px 0; border-bottom: 1px solid var(--grid); font-size: 13.5px; ve
 tr:last-child td { border-bottom: 0; }
 td.seq { color: var(--muted); font-variant-numeric: tabular-nums; width: 34px; }
 td.dig { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
-td.detail { color: var(--ink-2); }
+td.detail { color: var(--ink-2); padding-right: 20px; }
 
 .run { margin-bottom: 14px; }
 .run-head { display: flex; align-items: center; gap: 10px; margin: 0 0 6px; }
@@ -125,6 +125,16 @@ select, button {
 }
 button { cursor: pointer; }
 .empty { color: var(--muted); font-size: 13.5px; padding: 14px 0; }
+.banner {
+  display: none; align-items: flex-start; gap: 10px; margin: 14px 0 0;
+  padding: 11px 14px; border-radius: var(--radius);
+  border: 1px solid var(--border); background: var(--surface); font-size: 13.5px;
+}
+.banner.on { display: flex; }
+.banner .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warning);
+               margin-top: 6px; flex: none; }
+.banner b { font-weight: 600; }
+.note { color: var(--ink-2); font-size: 13.5px; padding: 14px 0; }
 .err {
   border: 1px solid var(--critical); border-radius: var(--radius);
   padding: 12px 14px; font-size: 13.5px; background: var(--surface);
@@ -140,6 +150,14 @@ button { cursor: pointer; }
     <button id="theme" title="Toggle theme">◐</button>
   </header>
   <div class="meta" id="acct">&nbsp;</div>
+
+  <div class="banner" id="banner">
+    <span class="dot"></span>
+    <span><b>Sample audit trail.</b> These decisions come from a recorded paper-trading run and
+    are replayed from a fixed file — not live data, and no order shown here was placed from this
+    page. The chain is still verified on read: the hashes are recomputed from the entries you
+    see.</span>
+  </div>
 
   <section>
     <h2>Portfolio</h2>
@@ -190,6 +208,15 @@ async function loadState() {
     const r = await fetch("/api/state");
     if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
     s = await r.json();
+    if (s.configured === false) {
+      $("tiles").innerHTML =
+        `<div class="note">Live account data is not configured for this deployment, so the
+         portfolio panel is empty. The mandate and the audit chain below need no credentials.</div>`;
+      $("market").className = "badge";
+      $("market").innerHTML = `<span class="dot"></span><span>no broker connected</span>`;
+      $("acct").textContent = "";
+      return null;
+    }
   } catch (e) {
     $("tiles").innerHTML = `<div class="err"><strong>Alpaca unreachable.</strong> ${e.message}</div>`;
     $("market").className = "badge bad";
@@ -289,7 +316,9 @@ async function loadAudit(day) {
 }
 
 async function boot() {
-  const days = (await (await fetch("/api/days")).json()).days;
+  const meta = await (await fetch("/api/days")).json();
+  const days = meta.days;
+  if (meta.sample) $("banner").classList.add("on");
   $("day").innerHTML = days.map((d) => `<option value="${d}">${d}</option>`).join("");
   $("day").onchange = () => loadAudit($("day").value);
   const state = await loadState();

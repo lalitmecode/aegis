@@ -1,0 +1,20 @@
+# Render blueprint for the read-only governance console.
+#
+# The console serves an audit trail and the mandate. It needs no Alpaca or LLM
+# credentials: with none set, /api/state reports `configured: false` and the
+# portfolio panel says so, while the mandate and the chain render normally.
+# AEGIS_DECISION_LOG points it at a committed, sanitised sample, because the
+# real logs under logs/ are gitignored and hold live decisions.
+services:
+  - type: web
+    name: aegis-console
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn aegis.web.app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/days
+    envVars:
+      - key: AEGIS_DECISION_LOG
+        value: docs/sample-decisions.jsonl
+      - key: PYTHON_VERSION
+        value: "3.13"

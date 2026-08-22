@@ -12,6 +12,7 @@ HTTP endpoint would weaken it for a convenience nobody asked for.
 
 from __future__ import annotations
 
+import os
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,27 @@ STATIC_DIR = ROOT / "static"
 MANDATE_PATH = ROOT / "config" / "mandate.yaml"
 LOGS_DIR = ROOT / "logs"
 
+#: Point the console at one specific log instead of the dated ones under
+#: logs/. A deployment sets this to a committed sample; locally it stays unset
+#: and the date-based lookup applies.
+DECISION_LOG_ENV = "AEGIS_DECISION_LOG"
+
+
+def _load_env() -> None:
+    """Load .env before anything reads it.
+
+    The credential check below runs long before Clients.from_env() would load
+    the file itself, so without this a local console reports "not configured"
+    while .env sits beside it holding the keys.
+    """
+    env_file = ROOT / ".env"
+    if env_file.exists():
+        try:
+            from dotenv import load_dotenv
+        except ImportError:  # deployment need not carry python-dotenv
+            return
+        load_dotenv(env_file)
+
 
 def create_app(
     *,
@@ -37,9 +59,13 @@ def create_app(
     mandate_path: Path = MANDATE_PATH,
     logs_dir: Path = LOGS_DIR,
     static_dir: Path = STATIC_DIR,
+    decision_log: Path | str | None = None,
 ) -> FastAPI:
     """Build the app. Every dependency is injectable so tests never hit the network."""
     app = FastAPI(title="Aegis governance console", docs_url=None, redoc_url=None)
+    _load_env()
+    log_override = decision_log or os.environ.get(DECISION_LOG_ENV) or None
+    log_override = Path(log_override) if log_override else None
     state: dict[str, Any] = {"clients": clients, "portfolio": portfolio, "session": session}
 
     def _clients():
@@ -67,17 +93,23 @@ def create_app(
     @app.get("/api/state")
     def read_state() -> JSONResponse:
         """Account and portfolio, as the risk guard would see them."""
+        if not (os.environ.get("ALPACA_API_KEY") and os.environ.get("ALPACA_SECRET_KEY")):
+            # Not an error: the console is designed to serve an audit trail
+            # with no broker credentials at all.
+            return JSONResponse({"configured": False, "reason": "no Alpaca credentials"})
+
         try:
             account = _clients().trading.get_account()
             market = _session().state(datetime.now(timezone.utc))
             snapshot = _portfolio().fetch()
-        except Exception as exc:  # the console degrades; it does not 500 blankly
+        except Exception as exc:  # configured but unreachable -- that is a fault
             raise HTTPException(
                 status_code=503, detail=f"{type(exc).__name__}: {exc}"
             ) from exc
 
         return JSONResponse(
             {
+                "configured": True,
                 "account": {
                     "number": account.account_number,
                     "status": str(account.status),
@@ -118,11 +150,15 @@ def create_app(
     @app.get("/api/audit")
     def read_audit(day: str | None = Query(default=None)) -> JSONResponse:
         """The day's chains, each verified by recomputing its digests."""
-        stamp = day or f"{date.today():%Y%m%d}"
-        runs = read_runs(logs_dir / f"audit-{stamp}.jsonl")
+        if log_override is not None:
+            stamp, runs = "sample", read_runs(log_override)
+        else:
+            stamp = day or f"{date.today():%Y%m%d}"
+            runs = read_runs(logs_dir / f"audit-{stamp}.jsonl")
         return JSONResponse(
             {
                 "day": stamp,
+                "sample": log_override is not None,
                 "runs": [
                     {
                         "intact": run.intact,
@@ -148,11 +184,13 @@ def create_app(
     @app.get("/api/days")
     def read_days() -> JSONResponse:
         """Which days have a log, newest first."""
+        if log_override is not None:
+            return JSONResponse({"days": ["sample"], "sample": True})
         stamps = sorted(
             (p.stem.removeprefix("audit-") for p in logs_dir.glob("audit-*.jsonl")),
             reverse=True,
         )
-        return JSONResponse({"days": stamps})
+        return JSONResponse({"days": stamps, "sample": False})
 
     @app.get("/")
     def index() -> FileResponse:

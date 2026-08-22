@@ -4,6 +4,10 @@ requests>=2.34.2         # alpaca-py's HTTP layer; its ConnectionError drives re
 python-dotenv>=1.2.3     # loads ALPACA_* from .env
 PyYAML>=6.0.3            # parses config/mandate.yaml
 
+# Console (aegis/web). Needed to serve it; not needed by the trading path.
+fastapi>=0.141.1
+uvicorn>=0.52.3
+
 # LLM providers. Either one satisfies aegis/agents/llm.py, which picks a
 # backend from the environment; with neither key set the agents degrade and
 # the trade is unaffected.
